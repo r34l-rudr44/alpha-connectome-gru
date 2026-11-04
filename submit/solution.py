@@ -1,38 +1,27 @@
-"""Submission entry point: stateful GRU exported to ONNX, one step per predict() call."""
+"""Submission entry point: stateful GRU, one numba-compiled step per predict() call."""
 import os
+import sys
 from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+os.environ.setdefault("NUMBA_CACHE_DIR", str(HERE / ".numba_cache"))
+sys.path.insert(0, str(HERE))
 
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-
-try:
-    from utils import DataPoint  # provided by the scorer
-except Exception:  # pragma: no cover
-    DataPoint = object
+from infer import StepModel  # bundled copy of wnn/infer.py
 
 
 class PredictionModel:
     def __init__(self):
-        import onnxruntime as ort
-
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = 1
-        so.inter_op_num_threads = 1
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self.sess = ort.InferenceSession(str(HERE / "model.onnx"), so, providers=["CPUExecutionProvider"])
-        h_shape = [d if isinstance(d, int) else 1 for d in self.sess.get_inputs()[1].shape]
-        self.h0 = np.zeros(h_shape, dtype=np.float32)
-        self.h = self.h0.copy()
+        self.m = StepModel(str(HERE / "weights.npz"))
         self.seq_ix = None
-        self.x = np.zeros((1, self.sess.get_inputs()[0].shape[1]), dtype=np.float32)
 
     def predict(self, data_point):
         if data_point.seq_ix != self.seq_ix:
             self.seq_ix = data_point.seq_ix
-            self.h = self.h0.copy()
-        self.x[0] = data_point.state
-        y, self.h = self.sess.run(None, {"x": self.x, "h": self.h})
+            self.m.reset()
+        y = self.m.step(np.asarray(data_point.state, dtype=np.float32))
         if not data_point.need_prediction:
             return None
-        return y.astype(np.float32)
+        return y.copy()

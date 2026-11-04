@@ -26,7 +26,7 @@ def run(name: str, extra: str):
     best = train(get_parser().parse_args(argv))
     vol.commit()
     files = {}
-    for fn in ("best.pt", "model.onnx", "norm.npz", "hist.json"):
+    for fn in ("best.pt", "weights.npz", "norm.npz", "hist.json"):
         p = f"/data/runs/{name}/{fn}"
         try:
             files[fn] = open(p, "rb").read()

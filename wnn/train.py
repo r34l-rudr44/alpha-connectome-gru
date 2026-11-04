@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from wnn.data import SeqDataset, SyntheticDataset, compute_feature_stats
+from wnn.infer import export_npz
 from wnn.model import GRUModel, export_onnx
 
 CLIP = 2.0
@@ -143,7 +144,12 @@ def train(args):
         if r["score"] > best:
             best = r["score"]
             torch.save({"model": model.state_dict(), "args": vars(args), "mean": mean, "std": std, "hist": hist}, out / "best.pt")
-            export_onnx(model, str(out / "model.onnx")); model.to(device)
+            export_npz(model, str(out / "weights.npz"))
+            if args.onnx:
+                try:
+                    export_onnx(model, str(out / "model.onnx")); model.to(device)
+                except Exception as e:  # onnx is optional; numba path is primary
+                    print("onnx export failed:", e, flush=True)
     (out / "hist.json").write_text(json.dumps(hist, indent=1))
     print(f"best valid score {best:.5f}", flush=True)
     return best
@@ -174,6 +180,7 @@ def get_parser():
     p.add_argument("--eval-batches", type=int, default=0)
     p.add_argument("--log-every", type=int, default=20)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--onnx", action="store_true")
     return p
 
 
