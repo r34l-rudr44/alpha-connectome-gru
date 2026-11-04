@@ -27,6 +27,19 @@ def read_sequence(pf, rg: int, feat: list[str]):
     return X, y, need, scored
 
 
+def holdout_split(path: str, frac: float, seed: int = 0):
+    """Deterministic split of a parquet's row groups into (rest, holdout) index lists."""
+    import pyarrow.parquet as pq
+
+    n = pq.ParquetFile(path).num_row_groups
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n)
+    k = int(round(frac * n))
+    hold = sorted(perm[:k].tolist())
+    rest = sorted(perm[k:].tolist())
+    return rest, hold
+
+
 def maybe_augment(X: np.ndarray, aug: bool) -> np.ndarray:
     if not aug:
         return X

@@ -92,9 +92,18 @@ def train(args):
         tr_ds, va_ds = SyntheticDataset(64, 2000, aug=args.aug), SyntheticDataset(16, 2000, seed=1000, aug=args.aug)
     else:
         tr_ds = SeqDataset(args.train, feat=None, aug=args.aug)
-        va_ds = SeqDataset(args.valid, feat=tr_ds.feat, aug=args.aug)
         if args.max_train:
             tr_ds.indices = tr_ds.indices[: args.max_train]
+        if args.holdout_frac > 0:  # train on train + (1-frac) of valid; select on the frac holdout
+            from torch.utils.data import ConcatDataset
+            from wnn.data import holdout_split
+
+            rest, hold = holdout_split(args.valid, args.holdout_frac, args.holdout_seed)
+            va_ds = SeqDataset(args.valid, indices=hold, feat=tr_ds.feat, aug=args.aug)
+            tr_ds = ConcatDataset([tr_ds, SeqDataset(args.valid, indices=rest, feat=va_ds.feat, aug=args.aug)])
+            print(f"holdout: {len(hold)} valid seqs held out, {len(rest)} added to training", flush=True)
+        else:
+            va_ds = SeqDataset(args.valid, feat=tr_ds.feat, aug=args.aug)
         if args.max_valid:
             va_ds.indices = va_ds.indices[: args.max_valid]
     n_feat = tr_ds[0][0].shape[1]
@@ -203,6 +212,8 @@ def get_parser():
     p.add_argument("--onnx", action="store_true")
     p.add_argument("--ema-decay", type=float, default=0.0, help="weight EMA decay per step, e.g. 0.999; 0 = off")
     p.add_argument("--aug", action="store_true", help="multi-scale feature augmentation (wnn.features)")
+    p.add_argument("--holdout-frac", type=float, default=0.0, help="train on train + valid, keeping this fraction of valid seqs for selection")
+    p.add_argument("--holdout-seed", type=int, default=0)
     return p
 
 

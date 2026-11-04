@@ -14,25 +14,28 @@ PACK = "/data/wnn_connectome_starterpack"
 
 
 @app.function(image=image, volumes={"/data": vol}, gpu="A10G", cpu=4, memory=16384, timeout=3 * 3600)
-def evaluate(names: list[str]):
+def evaluate(names: list[str], holdout_frac: float = 0.0, holdout_seed: int = 0):
     import itertools
     import json
     import os
     import numpy as np
     import torch
     from torch.utils.data import DataLoader
-    from wnn.data import SeqDataset
+    from wnn.data import SeqDataset, holdout_split
     from wnn.model import GRUModel
     from wnn.train import weighted_pearson_np
 
     dev = torch.device("cuda")
-    ds = SeqDataset(f"{PACK}/datasets/valid.parquet")
+    vpath = f"{PACK}/datasets/valid.parquet"
+    idx = holdout_split(vpath, holdout_frac, holdout_seed)[1] if holdout_frac > 0 else None
+    tag = f"_h{holdout_frac}_{holdout_seed}" if holdout_frac > 0 else ""
+    ds = SeqDataset(vpath, indices=idx)
     dl = DataLoader(ds, batch_size=8, num_workers=4)  # batch 64 OOMs: cuDNN GRU workspace over 20k steps
     os.makedirs("/data/preds", exist_ok=True)
     Y = M = None
     preds = {}
     for name in names:
-        cache = f"/data/preds/{name}.npy"
+        cache = f"/data/preds/{name}{tag}.npy"
         if os.path.exists(cache) and Y is not None:
             preds[name] = np.load(cache); continue
         ck = torch.load(f"/data/runs/{name}/best.pt", weights_only=False, map_location="cpu")
@@ -46,10 +49,10 @@ def evaluate(names: list[str]):
                 P.append(p.float().cpu()[mask].numpy()); Ys.append(y[mask].numpy()); Ms.append(mask.numpy())
         preds[name] = np.concatenate(P); np.save(cache, preds[name])
         if Y is None:
-            Y = np.concatenate(Ys); np.save("/data/preds/_Y.npy", Y)
+            Y = np.concatenate(Ys); np.save(f"/data/preds/_Y{tag}.npy", Y)
         print(name, "done", flush=True)
     if Y is None:
-        Y = np.load("/data/preds/_Y.npy")
+        Y = np.load(f"/data/preds/_Y{tag}.npy")
 
     def wp(p):
         return 0.5 * (weighted_pearson_np(Y[:, 0], p[:, 0]) + weighted_pearson_np(Y[:, 1], p[:, 1]))
@@ -66,14 +69,14 @@ def evaluate(names: list[str]):
         best, c = max(cand); chosen.append(c)
     res["greedy"] = {"chosen": chosen, "score": best}
     txt = json.dumps(res, indent=1)
-    open("/data/ensemble_eval.json", "w").write(txt); vol.commit()
+    open(f"/data/ensemble_eval{tag}.json", "w").write(txt); vol.commit()
     print(txt)
     return txt
 
 
 @app.local_entrypoint()
-def main(names: str, detach: bool = False):
+def main(names: str, holdout_frac: float = 0.0, holdout_seed: int = 0, detach: bool = False):
     lst = names.split(",")
     if detach:
-        print("spawned", evaluate.spawn(lst).object_id); return
-    print(evaluate.remote(lst))
+        print("spawned", evaluate.spawn(lst, holdout_frac, holdout_seed).object_id); return
+    print(evaluate.remote(lst, holdout_frac, holdout_seed))
