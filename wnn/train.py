@@ -117,6 +117,18 @@ def train(args):
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=total, pct_start=0.1)
     scaler_dtype = torch.bfloat16
 
+    ema = None
+    if args.ema_decay > 0:  # exponential moving average of weights, evaluated/saved alongside the raw weights
+        import copy
+        ema = copy.deepcopy(model).eval()
+        for p in ema.parameters():
+            p.requires_grad_(False)
+
+    def ema_update():
+        with torch.no_grad():
+            for pe, pm in zip(ema.parameters(), model.parameters()):
+                pe.mul_(args.ema_decay).add_(pm.detach(), alpha=1 - args.ema_decay)
+
     best, hist, step = -1.0, [], 0
     for ep in range(args.epochs):
         t0 = time.time(); run_loss = 0.0; nb = 0
@@ -133,23 +145,31 @@ def train(args):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 opt.step(); sched.step(); step += 1
+                if ema is not None:
+                    ema_update()
                 h = h.detach()
                 run_loss += loss.item(); nb += 1
             if args.log_every and nb % args.log_every == 0:
                 print(f"ep {ep} batch {nb} loss {run_loss / nb:.4f} lr {sched.get_last_lr()[0]:.2e} {time.time() - t0:.0f}s", flush=True)
         r = evaluate(model, va, device, args.eval_batches)
         r.update(epoch=ep, train_loss=run_loss / max(nb, 1), secs=time.time() - t0)
+        cands = [("raw", model, r)]
+        if ema is not None:
+            re_ = evaluate(ema, va, device, args.eval_batches)
+            r["ema_score"] = re_["score"]; r["ema_score_unmasked"] = re_["score_unmasked"]
+            cands.append(("ema", ema, re_))
         hist.append(r); print(json.dumps(r), flush=True)
         torch.save({"model": model.state_dict(), "args": vars(args), "mean": mean, "std": std, "hist": hist}, out / "last.pt")
-        if r["score"] > best:
-            best = r["score"]
-            torch.save({"model": model.state_dict(), "args": vars(args), "mean": mean, "std": std, "hist": hist}, out / "best.pt")
-            export_npz(model, str(out / "weights.npz"))
-            if args.onnx:
-                try:
-                    export_onnx(model, str(out / "model.onnx")); model.to(device)
-                except Exception as e:  # onnx is optional; numba path is primary
-                    print("onnx export failed:", e, flush=True)
+        for tag, mdl, rr in cands:
+            if rr["score"] > best:
+                best = rr["score"]
+                torch.save({"model": mdl.state_dict(), "args": vars(args), "mean": mean, "std": std, "hist": hist, "which": tag}, out / "best.pt")
+                export_npz(mdl, str(out / "weights.npz"))
+                if args.onnx:
+                    try:
+                        export_onnx(mdl, str(out / "model.onnx")); mdl.to(device)
+                    except Exception as e:  # onnx is optional; numba path is primary
+                        print("onnx export failed:", e, flush=True)
     (out / "hist.json").write_text(json.dumps(hist, indent=1))
     print(f"best valid score {best:.5f}", flush=True)
     return best
@@ -181,6 +201,7 @@ def get_parser():
     p.add_argument("--log-every", type=int, default=20)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--onnx", action="store_true")
+    p.add_argument("--ema-decay", type=float, default=0.0, help="weight EMA decay per step, e.g. 0.999; 0 = off")
     return p
 
 
