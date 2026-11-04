@@ -2,10 +2,10 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-_FULL = Path("data/wnn_connectome_starterpack")
-PACK_DIR = _FULL if _FULL.exists() else ROOT / "sample"                # sample/ = small slice pulled from Modal
+_LOCAL = Path("data/wnn_connectome_starterpack")
+_full = (_LOCAL / "datasets" / "valid_mask.parquet").exists()        # last file in the archive => extraction complete
+PACK_DIR = _LOCAL if _full else ROOT / "sample"                      # sample/ = small slice pulled from Modal
 DATA_DIR = PACK_DIR / "datasets"
-_full = PACK_DIR == _FULL
 TRAIN = DATA_DIR / ("train.parquet" if _full else "train_sample.parquet")
 VALID = DATA_DIR / ("valid.parquet" if _full else "valid_sample.parquet")
 VALID_MASK = DATA_DIR / "valid_mask.parquet"
