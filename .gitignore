@@ -9,3 +9,5 @@ __pycache__/
 *.pyc
 .venv/
 submissions/*.zip
+sample/
+submissions/*/
