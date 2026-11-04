@@ -45,6 +45,8 @@ def loss_fn(pred, y, mask, kind="wmse"):
     w = yc.abs() * mask.unsqueeze(-1)
     if kind == "wmse":
         return (w * (pred - yc) ** 2).sum() / w.sum().clamp_min(1e-6)
+    if kind == "whuber":
+        return (w * F.huber_loss(pred, yc, reduction="none", delta=1.0)).sum() / w.sum().clamp_min(1e-6)
     if kind == "corr":  # 1 - weighted Pearson per target, batch-pooled
         losses = []
         for k in range(2):
@@ -143,6 +145,10 @@ def train(args):
         t0 = time.time(); run_loss = 0.0; nb = 0
         for X, y, need, scored in tr:
             X, y, need = X.to(device, non_blocking=True), y.to(device, non_blocking=True), need.to(device)
+            if args.target_smooth > 0:  # centered moving average of the labels (training only; eval uses raw y)
+                k = args.target_smooth
+                y = F.avg_pool1d(y.transpose(1, 2), kernel_size=2 * k + 1, stride=1, padding=k,
+                                 count_include_pad=False).transpose(1, 2)
             B, T, _ = X.shape
             h = model.init_state(B, device)
             for s in range(0, T, args.tbptt):
@@ -198,7 +204,8 @@ def get_parser():
     p.add_argument("--in-proj", type=int, default=0)
     p.add_argument("--dropout", type=float, default=0.0)
     p.add_argument("--x-clip", type=float, default=10.0)
-    p.add_argument("--loss", default="wmse", choices=["wmse", "corr"])
+    p.add_argument("--loss", default="wmse", choices=["wmse", "whuber", "corr"])
+    p.add_argument("--target-smooth", type=int, default=0, help="centered moving-average half-window on training labels")
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--batch", type=int, default=32)
     p.add_argument("--tbptt", type=int, default=1000)
