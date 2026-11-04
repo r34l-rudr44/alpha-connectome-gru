@@ -27,7 +27,7 @@ def evaluate(names: list[str]):
 
     dev = torch.device("cuda")
     ds = SeqDataset(f"{PACK}/datasets/valid.parquet")
-    dl = DataLoader(ds, batch_size=64, num_workers=4)
+    dl = DataLoader(ds, batch_size=8, num_workers=4)  # batch 64 OOMs: cuDNN GRU workspace over 20k steps
     os.makedirs("/data/preds", exist_ok=True)
     Y = M = None
     preds = {}
