@@ -77,7 +77,10 @@ def eda(n_train: int = 300):
 
 
 @app.local_entrypoint()
-def main(n_train: int = 300):
+def main(n_train: int = 300, detach: bool = False):
+    if detach:  # modal run --detach modal/eda.py --detach ; fetch later: modal volume get wnn-connectome-data eda.json
+        print("spawned", eda.spawn(n_train).object_id)
+        return
     txt = eda.remote(n_train)
     with open("runs_eda.json", "w", encoding="utf-8") as f:
         f.write(txt)
