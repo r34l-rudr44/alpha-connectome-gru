@@ -12,7 +12,7 @@ image = (modal.Image.debian_slim(python_version="3.11")
 PACK = "/data/wnn_connectome_starterpack"
 
 
-@app.function(image=image, volumes={"/data": vol}, gpu="L4", cpu=4, memory=16384, timeout=6 * 3600)
+@app.function(image=image, volumes={"/data": vol}, gpu="A10G", cpu=4, memory=16384, timeout=6 * 3600)
 def run(name: str, extra: str):
     import shlex
     import subprocess
