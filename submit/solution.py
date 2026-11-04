@@ -1,8 +1,10 @@
-"""Submission entry point: stateful GRU, one step per predict() call.
+"""Submission entry point: one or more stateful GRUs (numba kernels), predictions averaged.
 
-Backend preference: numba kernel (fastest) -> onnxruntime (same speed class as the
-official baseline) -> pure numpy. All three produce identical outputs (<1e-6).
+Model files: weights.npz (single) or weights_0.npz, weights_1.npz, ... (ensemble; optional
+ensemble.json = {"weights": [w0, w1, ...]} for a weighted average).
+Backend preference: numba -> onnxruntime (single model only, model.onnx) -> pure numpy.
 """
+import json
 import os
 import sys
 from pathlib import Path
@@ -42,25 +44,52 @@ class _OrtBackend:
         return y
 
 
+class _Ensemble:
+    def __init__(self, models, weights):
+        self.models = models
+        self.w = np.asarray(weights, dtype=np.float32) / float(np.sum(weights))
+        self.out = np.zeros(2, dtype=np.float32)
+
+    def reset(self):
+        for m in self.models:
+            m.reset()
+
+    def step(self, x):
+        self.out[:] = 0
+        for w, m in zip(self.w, self.models):
+            self.out += w * m.step(x)
+        return self.out
+
+
+def _weight_files():
+    multi = sorted(HERE.glob("weights_*.npz"), key=lambda p: int(p.stem.split("_")[1]))
+    return multi if multi else [HERE / "weights.npz"]
+
+
 def _make_backend():
-    errors = []
+    files = _weight_files()
+    weights = [1.0] * len(files)
+    if (HERE / "ensemble.json").exists():
+        weights = json.loads((HERE / "ensemble.json").read_text()).get("weights", weights)
     try:
         import numba  # noqa: F401
         from infer import StepModel, HAVE_NUMBA
 
         if HAVE_NUMBA:
-            return "numba", StepModel(str(HERE / "weights.npz"))
-    except Exception as e:  # pragma: no cover
-        errors.append(f"numba: {e!r}")
-    if (HERE / "model.onnx").exists():
+            ms = [StepModel(str(f)) for f in files]
+            return "numba", (ms[0] if len(ms) == 1 else _Ensemble(ms, weights))
+    except Exception:  # pragma: no cover
+        pass
+    if len(files) == 1 and (HERE / "model.onnx").exists():
         try:
             return "onnx", _OrtBackend(HERE / "model.onnx")
-        except Exception as e:  # pragma: no cover
-            errors.append(f"onnx: {e!r}")
+        except Exception:  # pragma: no cover
+            pass
     os.environ["WNN_NO_NUMBA"] = "1"
     from infer import StepModel
 
-    return "numpy", StepModel(str(HERE / "weights.npz"))
+    ms = [StepModel(str(f)) for f in files]
+    return "numpy", (ms[0] if len(ms) == 1 else _Ensemble(ms, weights))
 
 
 class PredictionModel:

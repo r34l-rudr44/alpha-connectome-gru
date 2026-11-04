@@ -1,8 +1,10 @@
-"""Build submissions/<name>.zip from a run directory (weights.npz) + submit/solution.py + submit/infer.py.
+"""Build submissions/<name>.zip from one or more run directories.
 
-Usage: python make_submission.py runs/gru128 --name gru128 [--bench N]
+Usage: python make_submission.py runs/gru128 [runs/g128_s1 ...] --name NAME [--weights 1,1,...] [--bench N]
+Single run: weights.npz (+ model.onnx if present). Several runs: weights_<i>.npz + ensemble.json.
 """
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -14,8 +16,9 @@ ROOT = Path(__file__).resolve().parent
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("run_dir", type=Path)
+    ap.add_argument("run_dirs", type=Path, nargs="+")
     ap.add_argument("--name", required=True)
+    ap.add_argument("--weights", default="", help="comma-separated ensemble weights")
     ap.add_argument("--bench", type=int, default=0, help="run bench.py on N validation sequences first")
     a = ap.parse_args()
 
@@ -23,12 +26,21 @@ def main():
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
-    shutil.copy(ROOT / "submit" / "solution.py", stage / "solution.py")
-    shutil.copy(ROOT / "wnn" / "infer.py", stage / "infer.py")
-    shutil.copy(a.run_dir / "weights.npz", stage / "weights.npz")
-    if (a.run_dir / "model.onnx").exists():
-        shutil.copy(a.run_dir / "model.onnx", stage / "model.onnx")
-    (stage / "MODEL.md").write_text(f"run: {a.run_dir}\n")
+    for fn in ("solution.py",):
+        shutil.copy(ROOT / "submit" / fn, stage / fn)
+    for fn in ("infer.py", "features.py"):
+        shutil.copy(ROOT / "wnn" / fn, stage / fn)
+    if len(a.run_dirs) == 1:
+        d = a.run_dirs[0]
+        shutil.copy(d / "weights.npz", stage / "weights.npz")
+        if (d / "model.onnx").exists():
+            shutil.copy(d / "model.onnx", stage / "model.onnx")
+    else:
+        for i, d in enumerate(a.run_dirs):
+            shutil.copy(d / "weights.npz", stage / f"weights_{i}.npz")
+        w = [float(x) for x in a.weights.split(",")] if a.weights else [1.0] * len(a.run_dirs)
+        (stage / "ensemble.json").write_text(json.dumps({"weights": w, "runs": [str(d) for d in a.run_dirs]}))
+    (stage / "MODEL.md").write_text("runs: " + ", ".join(str(d) for d in a.run_dirs) + "\n")
 
     if a.bench:
         r = subprocess.run([sys.executable, str(ROOT / "bench.py"), str(stage), "--n-seq", str(a.bench)])
