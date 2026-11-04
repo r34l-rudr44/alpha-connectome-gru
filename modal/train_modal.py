@@ -7,7 +7,7 @@ import modal
 app = modal.App("wnn-connectome-train")
 vol = modal.Volume.from_name("wnn-connectome-data")
 image = (modal.Image.debian_slim(python_version="3.11")
-         .pip_install("torch==2.5.1", "numpy", "pyarrow", "onnx", "onnxruntime", "onnxscript")
+         .pip_install("torch==2.5.1", "numpy", "pyarrow", "onnx", "onnxruntime", "onnxscript", "numba")
          .add_local_python_source("wnn"))
 PACK = "/data/wnn_connectome_starterpack"
 

@@ -89,10 +89,10 @@ def train(args):
     torch.backends.cudnn.benchmark = True
 
     if args.synthetic:
-        tr_ds, va_ds = SyntheticDataset(64, 2000), SyntheticDataset(16, 2000, seed=1000)
+        tr_ds, va_ds = SyntheticDataset(64, 2000, aug=args.aug), SyntheticDataset(16, 2000, seed=1000, aug=args.aug)
     else:
-        tr_ds = SeqDataset(args.train, feat=None)
-        va_ds = SeqDataset(args.valid, feat=tr_ds.feat)
+        tr_ds = SeqDataset(args.train, feat=None, aug=args.aug)
+        va_ds = SeqDataset(args.valid, feat=tr_ds.feat, aug=args.aug)
         if args.max_train:
             tr_ds.indices = tr_ds.indices[: args.max_train]
         if args.max_valid:
@@ -164,8 +164,8 @@ def train(args):
             if rr["score"] > best:
                 best = rr["score"]
                 torch.save({"model": mdl.state_dict(), "args": vars(args), "mean": mean, "std": std, "hist": hist, "which": tag}, out / "best.pt")
-                export_npz(mdl, str(out / "weights.npz"))
-                if args.onnx:
+                export_npz(mdl, str(out / "weights.npz"), aug=args.aug)
+                if args.onnx and not args.aug:
                     try:
                         export_onnx(mdl, str(out / "model.onnx")); mdl.to(device)
                     except Exception as e:  # onnx is optional; numba path is primary
@@ -202,6 +202,7 @@ def get_parser():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--onnx", action="store_true")
     p.add_argument("--ema-decay", type=float, default=0.0, help="weight EMA decay per step, e.g. 0.999; 0 = off")
+    p.add_argument("--aug", action="store_true", help="multi-scale feature augmentation (wnn.features)")
     return p
 
 

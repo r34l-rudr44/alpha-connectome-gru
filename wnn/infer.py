@@ -84,11 +84,15 @@ def _head(h, ln_g, ln_b, WlT, bl, out, use_ln, tmp):
         out[o] = s
 
 
-def export_npz(model, path: str):
+def export_npz(model, path: str, aug: bool = False):
     """Dump GRUModel weights in the layout the kernels expect."""
+    from .features import N_BLOCKS
+
     sd = {k: v.detach().cpu().numpy().astype(np.float32) for k, v in model.state_dict().items()}
+    n_in = len(sd["mean"])
     d = {"mean": sd["mean"], "std": sd["std"], "x_clip": np.float32(model.x_clip),
-         "layers": np.int32(model.layers), "hidden": np.int32(model.hidden)}
+         "layers": np.int32(model.layers), "hidden": np.int32(model.hidden),
+         "aug": np.int32(1 if aug else 0), "n_raw": np.int32(n_in // N_BLOCKS if aug else n_in)}
     assert model.proj is None, "input projection not supported by the kernel yet"
     for l in range(model.layers):
         d[f"WiT{l}"] = np.ascontiguousarray(sd[f"gru.weight_ih_l{l}"])  # (3H, in)
@@ -113,19 +117,37 @@ class StepModel:
         self.use_ln = bool(int(z["use_ln"]))
         self.ln_g, self.ln_b, self.WlT, self.bl = z["ln_g"], z["ln_b"], z["WlT"], z["bl"]
         f = np.float32
+        self.aug = bool(int(z["aug"])) if "aug" in z else False
+        self.n_raw = int(z["n_raw"]) if "n_raw" in z else len(self.mean)
+        self.fstate = np.zeros((4, self.n_raw), f)
+        self.xa = np.zeros(len(self.mean), f)
+        self.first = True
         self.xn = np.zeros(len(self.mean), f)
         self.h = [np.zeros(self.H, f) for _ in range(self.L)]
         self.gi = np.zeros(3 * self.H, f); self.gh = np.zeros(3 * self.H, f)
         self.tmp = np.zeros(self.H, f); self.out = np.zeros(2, f)
         self.reset()
-        self.step(np.zeros(len(self.mean), f)); self.reset()  # trigger JIT
+        self.step(np.zeros(self.n_raw, f)); self.reset()  # trigger JIT
 
     def reset(self):
         for h in self.h:
             h[:] = 0
+        self.first = True
+
+    def _augment(self, x):
+        if not self.aug:
+            return x
+        if HAVE_NUMBA:
+            from .features import augment_step as _aug
+        else:
+            from .features import augment_step_numpy as _aug
+        _aug(x, self.fstate, self.first, self.xa)
+        self.first = False
+        return self.xa
 
     def _step_numpy(self, x: np.ndarray) -> np.ndarray:
         H = self.H
+        x = self._augment(x)
         inp = np.clip(np.nan_to_num((x - self.mean) / self.std, nan=0.0), -self.clip, self.clip)
         for l, (WiT, WhT, bi, bh) in enumerate(self.W):
             h = self.h[l]
@@ -145,6 +167,7 @@ class StepModel:
     def step(self, x: np.ndarray) -> np.ndarray:
         if not HAVE_NUMBA:
             return self._step_numpy(x)
+        x = self._augment(x)
         _normalize(x, self.mean, self.std, self.clip, self.xn)
         inp = self.xn
         for l, (WiT, WhT, bi, bh) in enumerate(self.W):

@@ -27,12 +27,23 @@ def read_sequence(pf, rg: int, feat: list[str]):
     return X, y, need, scored
 
 
+def maybe_augment(X: np.ndarray, aug: bool) -> np.ndarray:
+    if not aug:
+        return X
+    from wnn.features import augment_sequence, n_aug
+
+    out = np.empty((X.shape[0], n_aug(X.shape[1])), np.float32)
+    augment_sequence(np.ascontiguousarray(X, dtype=np.float32), out)
+    return out
+
+
 class SeqDataset(Dataset):
-    def __init__(self, path: str, indices: list[int] | None = None, feat: list[str] | None = None):
+    def __init__(self, path: str, indices: list[int] | None = None, feat: list[str] | None = None, aug: bool = False):
         import pyarrow.parquet as pq
 
         self.path = path
         self.feat = feat or feature_columns(path)
+        self.aug = aug
         n = pq.ParquetFile(path).num_row_groups
         self.indices = list(range(n)) if indices is None else list(indices)
         self._pf = None  # opened lazily per worker
@@ -46,14 +57,15 @@ class SeqDataset(Dataset):
 
             self._pf = pq.ParquetFile(self.path)
         X, y, need, scored = read_sequence(self._pf, self.indices[i], self.feat)
+        X = maybe_augment(X, self.aug)
         return torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(need), torch.from_numpy(scored)
 
 
 class SyntheticDataset(Dataset):
     """Smoke-test data with a learnable signal: y depends on an EMA of a few features."""
 
-    def __init__(self, n_seq=64, T=2000, F=112, seed=0):
-        self.n_seq, self.T, self.F, self.seed = n_seq, T, F, seed
+    def __init__(self, n_seq=64, T=2000, F=112, seed=0, aug=False):
+        self.n_seq, self.T, self.F, self.seed, self.aug = n_seq, T, F, seed, aug
 
     def __len__(self):
         return self.n_seq
@@ -67,6 +79,7 @@ class SyntheticDataset(Dataset):
         y = np.stack([ema + 0.3 * X[:, 7], -ema + 0.3 * X[:, 11]], 1).astype(np.float32)
         y += rng.normal(size=y.shape).astype(np.float32) * 0.3
         need = np.arange(self.T) >= 99
+        X = maybe_augment(X, self.aug)
         return torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(need), torch.from_numpy(need.copy())
 
 
