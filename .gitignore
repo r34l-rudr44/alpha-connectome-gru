@@ -1,0 +1,11 @@
+# data and caches live outside the repo
+*.parquet
+*.tar.gz
+*.npy
+*.npz
+cache/
+runs/
+__pycache__/
+*.pyc
+.venv/
+submissions/*.zip
