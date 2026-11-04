@@ -44,7 +44,7 @@ def evaluate(names: list[str], holdout_frac: float = 0.0, holdout_seed: int = 0)
         m.load_state_dict(ck["model"]); m.eval()
         P, Ys, Ms = [], [], []
         with torch.no_grad():
-            for X, y, need, scored in dl:
+            for X, y, need, scored, *_ in dl:
                 p, _ = m(X.to(dev)); mask = need & scored
                 P.append(p.float().cpu()[mask].numpy()); Ys.append(y[mask].numpy()); Ms.append(mask.numpy())
         preds[name] = np.concatenate(P); np.save(cache, preds[name])

@@ -60,11 +60,18 @@ def loss_fn(pred, y, mask, kind="wmse"):
     raise ValueError(kind)
 
 
+def soft_loss(pred, soft, y, mask):
+    """Weighted MSE to the teacher's (clipped) prediction, weighted by |clipped true y| like the metric."""
+    sc = soft.clamp(-CLIP, CLIP)
+    w = y.clamp(-CLIP, CLIP).abs() * mask.unsqueeze(-1)
+    return (w * (pred - sc) ** 2).sum() / w.sum().clamp_min(1e-6)
+
+
 @torch.no_grad()
 def evaluate(model, loader, device, max_batches=None):
     model.eval()
     ys, ps, ms, mn = [], [], [], []
-    for b, (X, y, need, scored) in enumerate(loader):
+    for b, (X, y, need, scored, *_) in enumerate(loader):
         if max_batches and b >= max_batches:
             break
         X = X.to(device, non_blocking=True)
@@ -93,7 +100,9 @@ def train(args):
     if args.synthetic:
         tr_ds, va_ds = SyntheticDataset(64, 2000, aug=args.aug), SyntheticDataset(16, 2000, seed=1000, aug=args.aug)
     else:
-        tr_ds = SeqDataset(args.train, feat=None, aug=args.aug)
+        soft_tr = f"{args.soft_dir}/train.npy" if args.soft_dir else None
+        soft_va = f"{args.soft_dir}/valid.npy" if args.soft_dir else None
+        tr_ds = SeqDataset(args.train, feat=None, aug=args.aug, soft_path=soft_tr)
         if args.max_train:
             tr_ds.indices = tr_ds.indices[: args.max_train]
         if args.holdout_frac > 0:  # train on train + (1-frac) of valid; select on the frac holdout
@@ -102,7 +111,7 @@ def train(args):
 
             rest, hold = holdout_split(args.valid, args.holdout_frac, args.holdout_seed)
             va_ds = SeqDataset(args.valid, indices=hold, feat=tr_ds.feat, aug=args.aug)
-            tr_ds = ConcatDataset([tr_ds, SeqDataset(args.valid, indices=rest, feat=va_ds.feat, aug=args.aug)])
+            tr_ds = ConcatDataset([tr_ds, SeqDataset(args.valid, indices=rest, feat=va_ds.feat, aug=args.aug, soft_path=soft_va)])
             print(f"holdout: {len(hold)} valid seqs held out, {len(rest)} added to training", flush=True)
         else:
             va_ds = SeqDataset(args.valid, feat=tr_ds.feat, aug=args.aug)
@@ -143,8 +152,9 @@ def train(args):
     best, hist, step = -1.0, [], 0
     for ep in range(args.epochs):
         t0 = time.time(); run_loss = 0.0; nb = 0
-        for X, y, need, scored in tr:
+        for X, y, need, scored, soft in tr:
             X, y, need = X.to(device, non_blocking=True), y.to(device, non_blocking=True), need.to(device)
+            soft = soft.to(device, non_blocking=True)
             if args.target_smooth > 0:  # centered moving average of the labels (training only; eval uses raw y)
                 k = args.target_smooth
                 y = F.avg_pool1d(y.transpose(1, 2), kernel_size=2 * k + 1, stride=1, padding=k,
@@ -155,7 +165,9 @@ def train(args):
                 e = min(s + args.tbptt, T)
                 with torch.autocast(device_type=device.type, dtype=scaler_dtype, enabled=device.type == "cuda"):
                     pred, h = model(X[:, s:e], h)
-                loss = loss_fn(pred.float(), y[:, s:e], need[:, s:e], args.loss)
+                loss = args.hard_lambda * loss_fn(pred.float(), y[:, s:e], need[:, s:e], args.loss)
+                if args.soft_dir and args.soft_lambda > 0:  # distillation: match the teacher's soft labels
+                    loss = loss + args.soft_lambda * soft_loss(pred.float(), soft[:, s:e], y[:, s:e], need[:, s:e])
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -221,6 +233,9 @@ def get_parser():
     p.add_argument("--aug", action="store_true", help="multi-scale feature augmentation (wnn.features)")
     p.add_argument("--holdout-frac", type=float, default=0.0, help="train on train + valid, keeping this fraction of valid seqs for selection")
     p.add_argument("--holdout-seed", type=int, default=0)
+    p.add_argument("--soft-dir", default="", help="dir with teacher train.npy/valid.npy soft labels (distillation)")
+    p.add_argument("--soft-lambda", type=float, default=1.0)
+    p.add_argument("--hard-lambda", type=float, default=1.0)
     return p
 
 

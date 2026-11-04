@@ -51,15 +51,20 @@ def maybe_augment(X: np.ndarray, aug: bool) -> np.ndarray:
 
 
 class SeqDataset(Dataset):
-    def __init__(self, path: str, indices: list[int] | None = None, feat: list[str] | None = None, aug: bool = False):
+    """Yields (X, y, need, scored, soft). soft = teacher soft labels (T,2) if soft_path is given, else a copy of y."""
+
+    def __init__(self, path: str, indices: list[int] | None = None, feat: list[str] | None = None,
+                 aug: bool = False, soft_path: str | None = None):
         import pyarrow.parquet as pq
 
         self.path = path
         self.feat = feat or feature_columns(path)
         self.aug = aug
+        self.soft_path = soft_path
         n = pq.ParquetFile(path).num_row_groups
         self.indices = list(range(n)) if indices is None else list(indices)
         self._pf = None  # opened lazily per worker
+        self._soft = None
 
     def __len__(self):
         return len(self.indices)
@@ -69,9 +74,17 @@ class SeqDataset(Dataset):
             import pyarrow.parquet as pq
 
             self._pf = pq.ParquetFile(self.path)
-        X, y, need, scored = read_sequence(self._pf, self.indices[i], self.feat)
+        rg = self.indices[i]
+        X, y, need, scored = read_sequence(self._pf, rg, self.feat)
         X = maybe_augment(X, self.aug)
-        return torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(need), torch.from_numpy(scored)
+        if self.soft_path:
+            if self._soft is None:
+                self._soft = np.load(self.soft_path, mmap_mode="r")  # (n_row_groups, T, 2) float16, row-group order
+            soft = np.asarray(self._soft[rg], dtype=np.float32)
+        else:
+            soft = y.copy()
+        return (torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(need), torch.from_numpy(scored),
+                torch.from_numpy(soft))
 
 
 class SyntheticDataset(Dataset):
@@ -93,7 +106,8 @@ class SyntheticDataset(Dataset):
         y += rng.normal(size=y.shape).astype(np.float32) * 0.3
         need = np.arange(self.T) >= 99
         X = maybe_augment(X, self.aug)
-        return torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(need), torch.from_numpy(need.copy())
+        return (torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(need), torch.from_numpy(need.copy()),
+                torch.from_numpy(y.copy()))
 
 
 def compute_feature_stats(ds: Dataset, n: int = 200, seed: int = 0):
