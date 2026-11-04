@@ -12,7 +12,7 @@ image = (modal.Image.debian_slim(python_version="3.11")
 PACK = "/data/wnn_connectome_starterpack"
 
 
-@app.function(image=image, volumes={"/data": vol}, gpu="L4", cpu=8, memory=32768, timeout=6 * 3600)
+@app.function(image=image, volumes={"/data": vol}, gpu="L4", cpu=4, memory=16384, timeout=6 * 3600)
 def run(name: str, extra: str):
     import shlex
     import subprocess
@@ -20,7 +20,7 @@ def run(name: str, extra: str):
     from wnn.train import get_parser, train
 
     argv = ["--train", f"{PACK}/datasets/train.parquet", "--valid", f"{PACK}/datasets/valid.parquet",
-            "--out", f"/data/runs/{name}", "--workers", "8"] + shlex.split(extra)
+            "--out", f"/data/runs/{name}", "--workers", "4"] + shlex.split(extra)
     print("args:", argv, flush=True)
     subprocess.run("nvidia-smi --query-gpu=name,memory.total --format=csv", shell=True)
     best = train(get_parser().parse_args(argv))
