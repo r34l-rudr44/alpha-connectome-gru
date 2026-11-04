@@ -49,5 +49,8 @@ def fetch():
 
 
 @app.local_entrypoint()
-def main():
+def main(detach: bool = False):
+    if detach:  # modal run --detach modal/fetch_data.py --detach  -> returns immediately, job keeps running
+        print("spawned", fetch.spawn().object_id)
+        return
     fetch.remote()
