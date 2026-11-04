@@ -1,10 +1,13 @@
 """Paths and constants. Data lives outside the repo."""
 from pathlib import Path
 
-PACK_DIR = Path("data/wnn_connectome_starterpack")
+ROOT = Path(__file__).resolve().parent
+_FULL = Path("data/wnn_connectome_starterpack")
+PACK_DIR = _FULL if _FULL.exists() else ROOT / "sample"                # sample/ = small slice pulled from Modal
 DATA_DIR = PACK_DIR / "datasets"
-TRAIN = DATA_DIR / "train.parquet"
-VALID = DATA_DIR / "valid.parquet"
+_full = PACK_DIR == _FULL
+TRAIN = DATA_DIR / ("train.parquet" if _full else "train_sample.parquet")
+VALID = DATA_DIR / ("valid.parquet" if _full else "valid_sample.parquet")
 VALID_MASK = DATA_DIR / "valid_mask.parquet"
 CACHE_DIR = Path("cache")
 MODAL_PACK_DIR = "/data/wnn_connectome_starterpack"                # inside the Modal volume

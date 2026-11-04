@@ -8,7 +8,11 @@ import math
 
 import numpy as np
 
+import os
+
 try:
+    if os.environ.get("WNN_NO_NUMBA"):
+        raise ImportError("disabled")
     from numba import njit
 
     HAVE_NUMBA = True
@@ -120,7 +124,27 @@ class StepModel:
         for h in self.h:
             h[:] = 0
 
+    def _step_numpy(self, x: np.ndarray) -> np.ndarray:
+        H = self.H
+        inp = np.clip(np.nan_to_num((x - self.mean) / self.std, nan=0.0), -self.clip, self.clip)
+        for l, (WiT, WhT, bi, bh) in enumerate(self.W):
+            h = self.h[l]
+            gi = WiT @ inp + bi
+            gh = WhT @ h + bh
+            r = 1.0 / (1.0 + np.exp(-(gi[:H] + gh[:H])))
+            z = 1.0 / (1.0 + np.exp(-(gi[H:2 * H] + gh[H:2 * H])))
+            n = np.tanh(gi[2 * H:] + r * gh[2 * H:])
+            h[:] = (1.0 - z) * n + z * h
+            inp = h
+        if self.use_ln:
+            m = inp.mean(); v = ((inp - m) ** 2).mean()
+            inp = (inp - m) / np.sqrt(v + 1e-5) * self.ln_g + self.ln_b
+        self.out[:] = self.WlT @ inp + self.bl
+        return self.out
+
     def step(self, x: np.ndarray) -> np.ndarray:
+        if not HAVE_NUMBA:
+            return self._step_numpy(x)
         _normalize(x, self.mean, self.std, self.clip, self.xn)
         inp = self.xn
         for l, (WiT, WhT, bi, bh) in enumerate(self.W):

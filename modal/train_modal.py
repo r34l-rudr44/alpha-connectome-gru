@@ -36,9 +36,12 @@ def run(name: str, extra: str):
 
 
 @app.local_entrypoint()
-def main(name: str = "gru128", extra: str = ""):
+def main(name: str = "gru128", extra: str = "", detach: bool = False):
     import pathlib
 
+    if detach:  # modal run --detach modal/train_modal.py --name X --extra "..." --detach
+        print("spawned", run.spawn(name, extra).object_id)  # outputs: modal volume get wnn-connectome-data runs/X/<file>
+        return
     best, files = run.remote(name, extra)
     d = pathlib.Path("runs") / name
     d.mkdir(parents=True, exist_ok=True)
