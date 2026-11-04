@@ -26,6 +26,8 @@ def main():
     shutil.copy(ROOT / "submit" / "solution.py", stage / "solution.py")
     shutil.copy(ROOT / "wnn" / "infer.py", stage / "infer.py")
     shutil.copy(a.run_dir / "weights.npz", stage / "weights.npz")
+    if (a.run_dir / "model.onnx").exists():
+        shutil.copy(a.run_dir / "model.onnx", stage / "model.onnx")
     (stage / "MODEL.md").write_text(f"run: {a.run_dir}\n")
 
     if a.bench:
