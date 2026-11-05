@@ -152,12 +152,15 @@ def train(args):
             for pe, pm in zip(ema.parameters(), model.parameters()):
                 pe.mul_(args.ema_decay).add_(pm.detach(), alpha=1 - args.ema_decay)
 
+    std_t = torch.as_tensor(std, device=device)
     best, hist, step = -1.0, [], 0
     for ep in range(args.epochs):
         t0 = time.time(); run_loss = 0.0; nb = 0
         for X, y, need, scored, soft, rw in tr:
             X, y, need = X.to(device, non_blocking=True), y.to(device, non_blocking=True), need.to(device)
             soft = soft.to(device, non_blocking=True)
+            if args.in_noise > 0:  # Gaussian input noise in units of each feature's std (regularizer)
+                X = X + torch.randn_like(X) * (std_t * args.in_noise)
             # per-step loss weights: need mask times (optional) row weights^pow, e.g. P(is_scored | x) from modal/mask_model.py
             mw = need.float()
             if args.weight_dir:
@@ -246,6 +249,7 @@ def get_parser():
     p.add_argument("--hard-lambda", type=float, default=1.0)
     p.add_argument("--weight-dir", default="", help="dir with train.npy/valid.npy per-step row weights, e.g. P(is_scored|x)")
     p.add_argument("--weight-pow", type=float, default=1.0, help="row weight exponent")
+    p.add_argument("--in-noise", type=float, default=0.0, help="train-time Gaussian input noise, in feature-std units")
     p.add_argument("--weight-floor", type=float, default=0.0, help="added to row weight^pow (keeps unscored-looking rows in play)")
     return p
 
