@@ -23,15 +23,13 @@ def dump(names: list[str], tag: str):
     import torch
     from torch.utils.data import DataLoader
     from wnn.data import SeqDataset
-    from wnn.model import GRUModel
+    from wnn.local_model import build_from_ckpt
 
     dev = torch.device("cuda")
     models = []
     for name in names:
         ck = torch.load(f"/data/runs/{name}/best.pt", weights_only=False, map_location="cpu")
-        a = ck["args"]
-        m = GRUModel(len(ck["mean"]), a["hidden"], a["layers"], a["in_proj"], a["dropout"], a["x_clip"]).to(dev)
-        m.load_state_dict(ck["model"]); m.eval(); models.append(m)
+        models.append(build_from_ckpt(ck).to(dev))  # GRUModel or LocalTransformer
     out = f"/data/teacher/{tag}"; os.makedirs(out, exist_ok=True)
     for split in ("valid", "train"):
         ds = SeqDataset(f"{PACK}/datasets/{split}.parquet")
