@@ -40,7 +40,7 @@ def weighted_pearson_np(y, p):
 
 
 def loss_fn(pred, y, mask, kind="wmse"):
-    """pred,y: (B,T,2); mask: (B,T) bool. Weighted by |clipped y| like the metric."""
+    """pred,y: (B,T,2); mask: (B,T) bool or float row weights. Weighted by |clipped y| like the metric."""
     yc = y.clamp(-CLIP, CLIP)
     w = yc.abs() * mask.unsqueeze(-1)
     if kind == "wmse":
@@ -102,7 +102,9 @@ def train(args):
     else:
         soft_tr = f"{args.soft_dir}/train.npy" if args.soft_dir else None
         soft_va = f"{args.soft_dir}/valid.npy" if args.soft_dir else None
-        tr_ds = SeqDataset(args.train, feat=None, aug=args.aug, soft_path=soft_tr)
+        w_tr = f"{args.weight_dir}/train.npy" if args.weight_dir else None
+        w_va = f"{args.weight_dir}/valid.npy" if args.weight_dir else None
+        tr_ds = SeqDataset(args.train, feat=None, aug=args.aug, soft_path=soft_tr, weight_path=w_tr)
         if args.max_train:
             tr_ds.indices = tr_ds.indices[: args.max_train]
         if args.holdout_frac > 0:  # train on train + (1-frac) of valid; select on the frac holdout
@@ -111,7 +113,8 @@ def train(args):
 
             rest, hold = holdout_split(args.valid, args.holdout_frac, args.holdout_seed)
             va_ds = SeqDataset(args.valid, indices=hold, feat=tr_ds.feat, aug=args.aug)
-            tr_ds = ConcatDataset([tr_ds, SeqDataset(args.valid, indices=rest, feat=va_ds.feat, aug=args.aug, soft_path=soft_va)])
+            tr_ds = ConcatDataset([tr_ds, SeqDataset(args.valid, indices=rest, feat=va_ds.feat, aug=args.aug,
+                                                     soft_path=soft_va, weight_path=w_va)])
             print(f"holdout: {len(hold)} valid seqs held out, {len(rest)} added to training", flush=True)
         else:
             va_ds = SeqDataset(args.valid, feat=tr_ds.feat, aug=args.aug)
@@ -152,9 +155,14 @@ def train(args):
     best, hist, step = -1.0, [], 0
     for ep in range(args.epochs):
         t0 = time.time(); run_loss = 0.0; nb = 0
-        for X, y, need, scored, soft in tr:
+        for X, y, need, scored, soft, rw in tr:
             X, y, need = X.to(device, non_blocking=True), y.to(device, non_blocking=True), need.to(device)
             soft = soft.to(device, non_blocking=True)
+            # per-step loss weights: need mask times (optional) row weights^pow, e.g. P(is_scored | x) from modal/mask_model.py
+            mw = need.float()
+            if args.weight_dir:
+                rw = rw.to(device, non_blocking=True).clamp_min(0)
+                mw = mw * (args.weight_floor + rw.pow(args.weight_pow))
             if args.target_smooth > 0:  # centered moving average of the labels (training only; eval uses raw y)
                 k = args.target_smooth
                 y = F.avg_pool1d(y.transpose(1, 2), kernel_size=2 * k + 1, stride=1, padding=k,
@@ -165,9 +173,9 @@ def train(args):
                 e = min(s + args.tbptt, T)
                 with torch.autocast(device_type=device.type, dtype=scaler_dtype, enabled=device.type == "cuda"):
                     pred, h = model(X[:, s:e], h)
-                loss = args.hard_lambda * loss_fn(pred.float(), y[:, s:e], need[:, s:e], args.loss)
+                loss = args.hard_lambda * loss_fn(pred.float(), y[:, s:e], mw[:, s:e], args.loss)
                 if args.soft_dir and args.soft_lambda > 0:  # distillation: match the teacher's soft labels
-                    loss = loss + args.soft_lambda * soft_loss(pred.float(), soft[:, s:e], y[:, s:e], need[:, s:e])
+                    loss = loss + args.soft_lambda * soft_loss(pred.float(), soft[:, s:e], y[:, s:e], mw[:, s:e])
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -236,6 +244,9 @@ def get_parser():
     p.add_argument("--soft-dir", default="", help="dir with teacher train.npy/valid.npy soft labels (distillation)")
     p.add_argument("--soft-lambda", type=float, default=1.0)
     p.add_argument("--hard-lambda", type=float, default=1.0)
+    p.add_argument("--weight-dir", default="", help="dir with train.npy/valid.npy per-step row weights, e.g. P(is_scored|x)")
+    p.add_argument("--weight-pow", type=float, default=1.0, help="row weight exponent")
+    p.add_argument("--weight-floor", type=float, default=0.0, help="added to row weight^pow (keeps unscored-looking rows in play)")
     return p
 
 

@@ -51,20 +51,23 @@ def maybe_augment(X: np.ndarray, aug: bool) -> np.ndarray:
 
 
 class SeqDataset(Dataset):
-    """Yields (X, y, need, scored, soft). soft = teacher soft labels (T,2) if soft_path is given, else a copy of y."""
+    """Yields (X, y, need, scored, soft, w). soft = teacher soft labels (T,2) if soft_path is given, else a copy of y;
+    w = per-step loss weights (T,) from weight_path (n_row_groups, T) if given, else ones."""
 
     def __init__(self, path: str, indices: list[int] | None = None, feat: list[str] | None = None,
-                 aug: bool = False, soft_path: str | None = None):
+                 aug: bool = False, soft_path: str | None = None, weight_path: str | None = None):
         import pyarrow.parquet as pq
 
         self.path = path
         self.feat = feat or feature_columns(path)
         self.aug = aug
         self.soft_path = soft_path
+        self.weight_path = weight_path
         n = pq.ParquetFile(path).num_row_groups
         self.indices = list(range(n)) if indices is None else list(indices)
         self._pf = None  # opened lazily per worker
         self._soft = None
+        self._w = None
 
     def __len__(self):
         return len(self.indices)
@@ -83,8 +86,14 @@ class SeqDataset(Dataset):
             soft = np.asarray(self._soft[rg], dtype=np.float32)
         else:
             soft = y.copy()
+        if self.weight_path:
+            if self._w is None:
+                self._w = np.load(self.weight_path, mmap_mode="r")  # (n_row_groups, T) float16
+            w = np.asarray(self._w[rg], dtype=np.float32)
+        else:
+            w = np.ones(len(X), np.float32)
         return (torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(need), torch.from_numpy(scored),
-                torch.from_numpy(soft))
+                torch.from_numpy(soft), torch.from_numpy(w))
 
 
 class SyntheticDataset(Dataset):
@@ -107,7 +116,7 @@ class SyntheticDataset(Dataset):
         need = np.arange(self.T) >= 99
         X = maybe_augment(X, self.aug)
         return (torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(need), torch.from_numpy(need.copy()),
-                torch.from_numpy(y.copy()))
+                torch.from_numpy(y.copy()), torch.ones(self.T))
 
 
 def compute_feature_stats(ds: Dataset, n: int = 200, seed: int = 0):
