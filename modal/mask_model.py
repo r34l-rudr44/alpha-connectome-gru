@@ -12,9 +12,25 @@ import modal
 app = modal.App("wnn-connectome-mask")
 vol = modal.Volume.from_name("wnn-connectome-data")
 image = (modal.Image.debian_slim(python_version="3.11")
-         .pip_install("numpy", "pyarrow", "lightgbm", "scikit-learn")
-         .add_local_python_source("wnn"))
+         .pip_install("numpy", "pyarrow", "lightgbm", "scikit-learn"))
 PACK = "/data/wnn_connectome_starterpack"
+META = ("seq_ix", "step_in_seq", "need_prediction", "is_scored", "t0", "t1")
+
+
+def feature_columns(path):  # torch-free copies of wnn.data helpers
+    import pyarrow.parquet as pq
+
+    return [c for c in pq.ParquetFile(path).schema_arrow.names if c not in META]
+
+
+def read_sequence(pf, rg, feat):
+    import numpy as np
+
+    t = pf.read_row_group(rg)
+    X = np.stack([t.column(c).to_numpy(zero_copy_only=False) for c in feat], 1).astype(np.float32, copy=False)
+    need = t.column("need_prediction").to_numpy().astype(bool)
+    sc = t.column("is_scored").to_numpy().astype(bool) if "is_scored" in t.column_names else need.copy()
+    return X, None, need, sc
 
 
 def _features(X):
@@ -35,7 +51,6 @@ def build(train_path, valid_path, out_dir, n_fit=300, n_hold=100, stride=4, tree
     import pyarrow.parquet as pq
     import lightgbm as lgb
     from sklearn.metrics import roc_auc_score
-    from wnn.data import feature_columns, read_sequence
 
     os.makedirs(out_dir, exist_ok=True)
     feat = feature_columns(train_path)
