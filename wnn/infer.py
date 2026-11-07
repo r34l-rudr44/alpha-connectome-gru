@@ -84,15 +84,19 @@ def _head(h, ln_g, ln_b, WlT, bl, out, use_ln, tmp):
         out[o] = s
 
 
-def export_npz(model, path: str, aug: bool = False):
-    """Dump GRUModel weights in the layout the kernels expect."""
-    from .features import N_BLOCKS
+def export_npz(model, path: str, aug: bool = False, bank: str = ""):
+    """Dump GRUModel weights in the layout the kernels expect. bank: EMA-bank spec (wnn.features.parse_bank)."""
+    from .features import N_BLOCKS, parse_bank
 
     sd = {k: v.detach().cpu().numpy().astype(np.float32) for k, v in model.state_dict().items()}
     n_in = len(sd["mean"])
     d = {"mean": sd["mean"], "std": sd["std"], "x_clip": np.float32(model.x_clip),
          "layers": np.int32(model.layers), "hidden": np.int32(model.hidden),
          "aug": np.int32(1 if aug else 0), "n_raw": np.int32(n_in // N_BLOCKS if aug else n_in)}
+    if bank:
+        alphas, scaled = parse_bank(bank)
+        d["bank_alphas"] = alphas; d["bank_scaled"] = np.int32(1 if scaled else 0)
+        d["n_raw"] = np.int32(n_in // (1 + len(alphas)))
     assert model.proj is None, "input projection not supported by the kernel yet"
     for l in range(model.layers):
         d[f"WiT{l}"] = np.ascontiguousarray(sd[f"gru.weight_ih_l{l}"])  # (3H, in)
@@ -120,6 +124,10 @@ class StepModel:
         self.aug = bool(int(z["aug"])) if "aug" in z else False
         self.n_raw = int(z["n_raw"]) if "n_raw" in z else len(self.mean)
         self.fstate = np.zeros((4, self.n_raw), f)
+        self.bank = "bank_alphas" in z
+        if self.bank:
+            self.alphas = np.ascontiguousarray(z["bank_alphas"], dtype=f); self.scaled = bool(int(z["bank_scaled"]))
+            self.ema = np.zeros((len(self.alphas), self.n_raw), f); self.sc = np.zeros((len(self.alphas), self.n_raw), f)
         self.xa = np.zeros(len(self.mean), f)
         self.first = True
         self.xn = np.zeros(len(self.mean), f)
@@ -135,6 +143,14 @@ class StepModel:
         self.first = True
 
     def _augment(self, x):
+        if self.bank:
+            if HAVE_NUMBA:
+                from .features import bank_step as _bank
+            else:
+                from .features import bank_step_numpy as _bank
+            _bank(x, self.alphas, self.scaled, self.ema, self.sc, self.first, self.xa)
+            self.first = False
+            return self.xa
         if not self.aug:
             return x
         if HAVE_NUMBA:

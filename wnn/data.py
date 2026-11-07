@@ -40,7 +40,15 @@ def holdout_split(path: str, frac: float, seed: int = 0):
     return rest, hold
 
 
-def maybe_augment(X: np.ndarray, aug: bool) -> np.ndarray:
+def maybe_augment(X: np.ndarray, aug: bool, bank: str = "") -> np.ndarray:
+    """aug: legacy 5-block augmentation; bank: EMA-bank spec (wnn.features.parse_bank), e.g. '100,300,1000,3000[:s]'."""
+    if bank:
+        from wnn.features import bank_sequence, n_bank, parse_bank
+
+        alphas, scaled = parse_bank(bank)
+        out = np.empty((X.shape[0], n_bank(X.shape[1], len(alphas))), np.float32)
+        bank_sequence(np.ascontiguousarray(X, dtype=np.float32), alphas, scaled, out)
+        return out
     if not aug:
         return X
     from wnn.features import augment_sequence, n_aug
@@ -56,12 +64,13 @@ class SeqDataset(Dataset):
 
     def __init__(self, path: str, indices: list[int] | None = None, feat: list[str] | None = None,
                  aug: bool = False, soft_path: str | None = None, weight_path: str | None = None,
-                 seq_weight_path: str | None = None):
+                 seq_weight_path: str | None = None, bank: str = ""):
         import pyarrow.parquet as pq
 
         self.path = path
         self.feat = feat or feature_columns(path)
         self.aug = aug
+        self.bank = bank  # EMA-bank spec (see maybe_augment)
         self.soft_path = soft_path
         self.weight_path = weight_path
         self.seq_weight_path = seq_weight_path  # (n_row_groups,) per-sequence multiplier on the row weights
@@ -82,7 +91,7 @@ class SeqDataset(Dataset):
             self._pf = pq.ParquetFile(self.path)
         rg = self.indices[i]
         X, y, need, scored = read_sequence(self._pf, rg, self.feat)
-        X = maybe_augment(X, self.aug)
+        X = maybe_augment(X, self.aug, self.bank)
         if self.soft_path:
             if self._soft is None:
                 self._soft = np.load(self.soft_path, mmap_mode="r")  # (n_row_groups, T, 2) float16, row-group order
@@ -106,8 +115,8 @@ class SeqDataset(Dataset):
 class SyntheticDataset(Dataset):
     """Smoke-test data with a learnable signal: y depends on an EMA of a few features."""
 
-    def __init__(self, n_seq=64, T=2000, F=112, seed=0, aug=False):
-        self.n_seq, self.T, self.F, self.seed, self.aug = n_seq, T, F, seed, aug
+    def __init__(self, n_seq=64, T=2000, F=112, seed=0, aug=False, bank=""):
+        self.n_seq, self.T, self.F, self.seed, self.aug, self.bank = n_seq, T, F, seed, aug, bank
 
     def __len__(self):
         return self.n_seq
@@ -121,7 +130,7 @@ class SyntheticDataset(Dataset):
         y = np.stack([ema + 0.3 * X[:, 7], -ema + 0.3 * X[:, 11]], 1).astype(np.float32)
         y += rng.normal(size=y.shape).astype(np.float32) * 0.3
         need = np.arange(self.T) >= 99
-        X = maybe_augment(X, self.aug)
+        X = maybe_augment(X, self.aug, self.bank)
         return (torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(need), torch.from_numpy(need.copy()),
                 torch.from_numpy(y.copy()), torch.ones(self.T))
 

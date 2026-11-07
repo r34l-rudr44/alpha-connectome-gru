@@ -98,7 +98,7 @@ def train(args):
     torch.backends.cudnn.benchmark = True
 
     if args.synthetic:
-        tr_ds, va_ds = SyntheticDataset(64, 2000, aug=args.aug), SyntheticDataset(16, 2000, seed=1000, aug=args.aug)
+        tr_ds, va_ds = SyntheticDataset(64, 2000, aug=args.aug, bank=args.bank), SyntheticDataset(16, 2000, seed=1000, aug=args.aug, bank=args.bank)
     else:
         soft_tr = f"{args.soft_dir}/train.npy" if args.soft_dir else None
         soft_va = f"{args.soft_dir}/valid.npy" if args.soft_dir else None
@@ -106,7 +106,7 @@ def train(args):
         w_va = f"{args.weight_dir}/valid.npy" if args.weight_dir else None
         sw_tr = f"{args.seq_weight_dir}/train.npy" if args.seq_weight_dir else None
         sw_va = f"{args.seq_weight_dir}/valid.npy" if args.seq_weight_dir else None
-        tr_ds = SeqDataset(args.train, feat=None, aug=args.aug, soft_path=soft_tr, weight_path=w_tr, seq_weight_path=sw_tr)
+        tr_ds = SeqDataset(args.train, feat=None, aug=args.aug, soft_path=soft_tr, weight_path=w_tr, seq_weight_path=sw_tr, bank=args.bank)
         if args.max_train:
             tr_ds.indices = tr_ds.indices[: args.max_train]
         if args.holdout_frac > 0:  # train on train + (1-frac) of valid; select on the frac holdout
@@ -114,12 +114,12 @@ def train(args):
             from wnn.data import holdout_split
 
             rest, hold = holdout_split(args.valid, args.holdout_frac, args.holdout_seed)
-            va_ds = SeqDataset(args.valid, indices=hold, feat=tr_ds.feat, aug=args.aug)
+            va_ds = SeqDataset(args.valid, indices=hold, feat=tr_ds.feat, aug=args.aug, bank=args.bank)
             tr_ds = ConcatDataset([tr_ds, SeqDataset(args.valid, indices=rest, feat=va_ds.feat, aug=args.aug,
-                                                     soft_path=soft_va, weight_path=w_va, seq_weight_path=sw_va)])
+                                                     soft_path=soft_va, weight_path=w_va, seq_weight_path=sw_va, bank=args.bank)])
             print(f"holdout: {len(hold)} valid seqs held out, {len(rest)} added to training", flush=True)
         else:
-            va_ds = SeqDataset(args.valid, feat=tr_ds.feat, aug=args.aug)
+            va_ds = SeqDataset(args.valid, feat=tr_ds.feat, aug=args.aug, bank=args.bank)
         if args.max_valid:
             va_ds.indices = va_ds.indices[: args.max_valid]
     n_feat = tr_ds[0][0].shape[1]
@@ -154,6 +154,23 @@ def train(args):
             for pe, pm in zip(ema.parameters(), model.parameters()):
                 pe.mul_(args.ema_decay).add_(pm.detach(), alpha=1 - args.ema_decay)
 
+    swa, swa_n, swa_from = None, 0, int(args.swa_start * total) if args.swa_start > 0 else None
+    if swa_from is not None:  # SWA (Izmailov et al. 2018): from swa_from on, hold lr at lr*swa_lr and average weights every swa_every steps
+        import copy
+        swa = copy.deepcopy(model).eval()
+        for p in swa.parameters():
+            p.requires_grad_(False)
+
+    def swa_update():
+        nonlocal swa_n
+        with torch.no_grad():
+            for ps, pm in zip(swa.parameters(), model.parameters()):
+                if swa_n == 0:
+                    ps.copy_(pm.detach())
+                else:
+                    ps.add_((pm.detach() - ps) / (swa_n + 1))
+        swa_n += 1
+
     std_t = torch.as_tensor(std, device=device)
     best, hist, step = -1.0, [], 0
     for ep in range(args.epochs):
@@ -186,7 +203,14 @@ def train(args):
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-                opt.step(); sched.step(); step += 1
+                opt.step(); step += 1
+                if swa_from is not None and step >= swa_from:
+                    for g in opt.param_groups:
+                        g["lr"] = args.lr * args.swa_lr
+                    if (step - swa_from) % args.swa_every == 0:
+                        swa_update()
+                else:
+                    sched.step()
                 if ema is not None:
                     ema_update()
                 h = h.detach()
@@ -200,13 +224,17 @@ def train(args):
             re_ = evaluate(ema, va, device, args.eval_batches)
             r["ema_score"] = re_["score"]; r["ema_score_unmasked"] = re_["score_unmasked"]
             cands.append(("ema", ema, re_))
+        if swa is not None and swa_n > 0:
+            rs = evaluate(swa, va, device, args.eval_batches)
+            r["swa_score"] = rs["score"]; r["swa_score_unmasked"] = rs["score_unmasked"]; r["swa_n"] = swa_n
+            cands.append(("swa", swa, rs))
         hist.append(r); print(json.dumps(r), flush=True)
         torch.save({"model": model.state_dict(), "args": vars(args), "mean": mean, "std": std, "hist": hist}, out / "last.pt")
         for tag, mdl, rr in cands:
             if rr["score"] > best:
                 best = rr["score"]
                 torch.save({"model": mdl.state_dict(), "args": vars(args), "mean": mean, "std": std, "hist": hist, "which": tag}, out / "best.pt")
-                export_npz(mdl, str(out / "weights.npz"), aug=args.aug)
+                export_npz(mdl, str(out / "weights.npz"), aug=args.aug, bank=args.bank)
                 if args.onnx and not args.aug:
                     try:
                         export_onnx(mdl, str(out / "model.onnx")); mdl.to(device)
@@ -258,6 +286,10 @@ def get_parser():
     p.add_argument("--weight-thresh", type=float, default=0.0, help="hard selection: row weight = 1[P >= thresh] (0 = off)")
     p.add_argument("--seq-weight-dir", default="", help="dir with train.npy/valid.npy per-sequence weight multipliers (n_row_groups,)")
     p.add_argument("--chrono", type=float, default=0.0, help="chrono init of the GRU update gate with T log-uniform in [1, chrono] (0 = off)")
+    p.add_argument("--bank", default="", help="EMA-bank input features: half-lives 'h1,h2,...' (+':s' for scale-normalised), e.g. '100,300,1000,3000'")
+    p.add_argument("--swa-start", type=float, default=0.0, help="SWA from this fraction of total steps (0 = off); lr held at lr*swa_lr from then on")
+    p.add_argument("--swa-lr", type=float, default=0.25, help="SWA constant lr as a fraction of --lr")
+    p.add_argument("--swa-every", type=int, default=50, help="average weights every N optimiser steps during SWA")
     return p
 
 
