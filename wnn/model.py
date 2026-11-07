@@ -6,7 +6,7 @@ import torch.nn as nn
 
 
 class GRUModel(nn.Module):
-    def __init__(self, n_features=112, hidden=128, layers=1, in_proj=0, dropout=0.0, x_clip=10.0):
+    def __init__(self, n_features=112, hidden=128, layers=1, in_proj=0, dropout=0.0, x_clip=10.0, chrono=0.0):
         super().__init__()
         self.register_buffer("mean", torch.zeros(n_features))
         self.register_buffer("std", torch.ones(n_features))
@@ -20,6 +20,12 @@ class GRUModel(nn.Module):
         self.gru = nn.GRU(d_in, hidden, num_layers=layers, batch_first=True,
                           dropout=dropout if layers > 1 else 0.0)
         self.head = nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, 2))
+        if chrono > 0:  # chrono initialisation (Tallec & Ollivier 2018): update-gate bias = log T, T log-uniform in [1, chrono]
+            with torch.no_grad():
+                for k in range(layers):
+                    T = torch.exp(torch.rand(hidden) * torch.log(torch.tensor(float(chrono))))
+                    getattr(self.gru, f"bias_ih_l{k}")[hidden:2 * hidden] = torch.log(T)
+                    getattr(self.gru, f"bias_hh_l{k}")[hidden:2 * hidden] = 0.0
 
     def set_stats(self, mean, std):
         self.mean.copy_(torch.as_tensor(mean)); self.std.copy_(torch.as_tensor(std))

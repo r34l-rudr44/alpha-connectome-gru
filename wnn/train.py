@@ -104,7 +104,9 @@ def train(args):
         soft_va = f"{args.soft_dir}/valid.npy" if args.soft_dir else None
         w_tr = f"{args.weight_dir}/train.npy" if args.weight_dir else None
         w_va = f"{args.weight_dir}/valid.npy" if args.weight_dir else None
-        tr_ds = SeqDataset(args.train, feat=None, aug=args.aug, soft_path=soft_tr, weight_path=w_tr)
+        sw_tr = f"{args.seq_weight_dir}/train.npy" if args.seq_weight_dir else None
+        sw_va = f"{args.seq_weight_dir}/valid.npy" if args.seq_weight_dir else None
+        tr_ds = SeqDataset(args.train, feat=None, aug=args.aug, soft_path=soft_tr, weight_path=w_tr, seq_weight_path=sw_tr)
         if args.max_train:
             tr_ds.indices = tr_ds.indices[: args.max_train]
         if args.holdout_frac > 0:  # train on train + (1-frac) of valid; select on the frac holdout
@@ -114,7 +116,7 @@ def train(args):
             rest, hold = holdout_split(args.valid, args.holdout_frac, args.holdout_seed)
             va_ds = SeqDataset(args.valid, indices=hold, feat=tr_ds.feat, aug=args.aug)
             tr_ds = ConcatDataset([tr_ds, SeqDataset(args.valid, indices=rest, feat=va_ds.feat, aug=args.aug,
-                                                     soft_path=soft_va, weight_path=w_va)])
+                                                     soft_path=soft_va, weight_path=w_va, seq_weight_path=sw_va)])
             print(f"holdout: {len(hold)} valid seqs held out, {len(rest)} added to training", flush=True)
         else:
             va_ds = SeqDataset(args.valid, feat=tr_ds.feat, aug=args.aug)
@@ -126,7 +128,7 @@ def train(args):
     mean, std = compute_feature_stats(tr_ds, n=args.stats_seqs, seed=args.seed)
     np.savez(out / "norm.npz", mean=mean, std=std)
 
-    model = GRUModel(n_feat, args.hidden, args.layers, args.in_proj, args.dropout, args.x_clip).to(device)
+    model = GRUModel(n_feat, args.hidden, args.layers, args.in_proj, args.dropout, args.x_clip, chrono=args.chrono).to(device)
     model.set_stats(mean, std)
     print(f"params={sum(p.numel() for p in model.parameters()):,}", flush=True)
 
@@ -163,7 +165,7 @@ def train(args):
                 X = X + torch.randn_like(X) * (std_t * args.in_noise)
             # per-step loss weights: need mask times (optional) row weights^pow, e.g. P(is_scored | x) from modal/mask_model.py
             mw = need.float()
-            if args.weight_dir:
+            if args.weight_dir or args.seq_weight_dir:
                 rw = rw.to(device, non_blocking=True).clamp_min(0)
                 if args.weight_thresh > 0:  # hard selection: keep rows with P >= thresh (plus floor)
                     rw = (rw >= args.weight_thresh).float()
@@ -254,6 +256,8 @@ def get_parser():
     p.add_argument("--in-noise", type=float, default=0.0, help="train-time Gaussian input noise, in feature-std units")
     p.add_argument("--weight-floor", type=float, default=0.0, help="added to row weight^pow (keeps unscored-looking rows in play)")
     p.add_argument("--weight-thresh", type=float, default=0.0, help="hard selection: row weight = 1[P >= thresh] (0 = off)")
+    p.add_argument("--seq-weight-dir", default="", help="dir with train.npy/valid.npy per-sequence weight multipliers (n_row_groups,)")
+    p.add_argument("--chrono", type=float, default=0.0, help="chrono init of the GRU update gate with T log-uniform in [1, chrono] (0 = off)")
     return p
 
 

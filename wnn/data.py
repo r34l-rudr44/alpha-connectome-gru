@@ -55,7 +55,8 @@ class SeqDataset(Dataset):
     w = per-step loss weights (T,) from weight_path (n_row_groups, T) if given, else ones."""
 
     def __init__(self, path: str, indices: list[int] | None = None, feat: list[str] | None = None,
-                 aug: bool = False, soft_path: str | None = None, weight_path: str | None = None):
+                 aug: bool = False, soft_path: str | None = None, weight_path: str | None = None,
+                 seq_weight_path: str | None = None):
         import pyarrow.parquet as pq
 
         self.path = path
@@ -63,6 +64,8 @@ class SeqDataset(Dataset):
         self.aug = aug
         self.soft_path = soft_path
         self.weight_path = weight_path
+        self.seq_weight_path = seq_weight_path  # (n_row_groups,) per-sequence multiplier on the row weights
+        self._sw = None
         n = pq.ParquetFile(path).num_row_groups
         self.indices = list(range(n)) if indices is None else list(indices)
         self._pf = None  # opened lazily per worker
@@ -92,6 +95,10 @@ class SeqDataset(Dataset):
             w = np.asarray(self._w[rg], dtype=np.float32)
         else:
             w = np.ones(len(X), np.float32)
+        if self.seq_weight_path:
+            if self._sw is None:
+                self._sw = np.load(self.seq_weight_path).astype(np.float32)
+            w = w * float(self._sw[rg])
         return (torch.from_numpy(X), torch.from_numpy(y), torch.from_numpy(need), torch.from_numpy(scored),
                 torch.from_numpy(soft), torch.from_numpy(w))
 
