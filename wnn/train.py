@@ -165,6 +165,8 @@ def train(args):
             mw = need.float()
             if args.weight_dir:
                 rw = rw.to(device, non_blocking=True).clamp_min(0)
+                if args.weight_thresh > 0:  # hard selection: keep rows with P >= thresh (plus floor)
+                    rw = (rw >= args.weight_thresh).float()
                 mw = mw * (args.weight_floor + rw.pow(args.weight_pow))
             if args.target_smooth > 0:  # centered moving average of the labels (training only; eval uses raw y)
                 k = args.target_smooth
@@ -251,6 +253,7 @@ def get_parser():
     p.add_argument("--weight-pow", type=float, default=1.0, help="row weight exponent")
     p.add_argument("--in-noise", type=float, default=0.0, help="train-time Gaussian input noise, in feature-std units")
     p.add_argument("--weight-floor", type=float, default=0.0, help="added to row weight^pow (keeps unscored-looking rows in play)")
+    p.add_argument("--weight-thresh", type=float, default=0.0, help="hard selection: row weight = 1[P >= thresh] (0 = off)")
     return p
 
 
