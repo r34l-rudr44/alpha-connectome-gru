@@ -22,7 +22,7 @@ def evaluate(names: list[str], holdout_frac: float = 0.0, holdout_seed: int = 0)
     import torch
     from torch.utils.data import DataLoader
     from wnn.data import SeqDataset, holdout_split
-    from wnn.model import GRUModel
+    from wnn.local_model import build_from_ckpt
     from wnn.train import weighted_pearson_np
 
     dev = torch.device("cuda")
@@ -39,9 +39,8 @@ def evaluate(names: list[str], holdout_frac: float = 0.0, holdout_seed: int = 0)
         if os.path.exists(cache) and Y is not None:
             preds[name] = np.load(cache); continue
         ck = torch.load(f"/data/runs/{name}/best.pt", weights_only=False, map_location="cpu")
-        a = ck["args"]
-        m = GRUModel(len(ck["mean"]), a["hidden"], a["layers"], a["in_proj"], a["dropout"], a["x_clip"]).to(dev)
-        m.load_state_dict(ck["model"]); m.eval()
+        assert not ck["args"].get("aug") and not ck["args"].get("bank"), "aug/bank runs need the feature transform here"
+        m = build_from_ckpt(ck).to(dev)
         P, Ys, Ms = [], [], []
         with torch.no_grad():
             for X, y, need, scored, *_ in dl:

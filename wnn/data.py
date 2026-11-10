@@ -64,8 +64,10 @@ class SeqDataset(Dataset):
 
     def __init__(self, path: str, indices: list[int] | None = None, feat: list[str] | None = None,
                  aug: bool = False, soft_path: str | None = None, weight_path: str | None = None,
-                 seq_weight_path: str | None = None, bank: str = ""):
+                 seq_weight_path: str | None = None, bank: str = "", scored_weight: float | None = None):
         import pyarrow.parquet as pq
+
+        self.scored_weight = scored_weight  # if set: w = 1 on is_scored rows, this value elsewhere (true mask; overrides weight_path)
 
         self.path = path
         self.feat = feat or feature_columns(path)
@@ -104,6 +106,8 @@ class SeqDataset(Dataset):
             w = np.asarray(self._w[rg], dtype=np.float32)
         else:
             w = np.ones(len(X), np.float32)
+        if self.scored_weight is not None:
+            w = np.where(scored, np.float32(1.0), np.float32(self.scored_weight)).astype(np.float32)
         if self.seq_weight_path:
             if self._sw is None:
                 self._sw = np.load(self.seq_weight_path).astype(np.float32)

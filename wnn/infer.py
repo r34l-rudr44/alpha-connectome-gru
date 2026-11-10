@@ -25,6 +25,11 @@ except Exception:  # pragma: no cover
 
         return deco if not (a and callable(a[0])) else a[0]
 
+try:  # inside the wnn package
+    from . import features as _feat
+except ImportError:  # flat layout of a submission zip (infer.py and features.py side by side)
+    import features as _feat
+
 
 @njit(fastmath=True, cache=True)
 def _gru_layer(x, h, WiT, WhT, bi, bh, gi, gh):
@@ -46,7 +51,7 @@ def _gru_layer(x, h, WiT, WhT, bi, bh, gi, gh):
         h[j] = (1.0 - z) * n + z * h[j]
 
 
-@njit(fastmath=True, cache=True)
+@njit(cache=True)  # no fastmath here: it lets LLVM drop the v != v NaN test (NaN/inf inputs then give wrong outputs)
 def _normalize(x, mean, std, clip, out):
     for k in range(x.shape[0]):
         v = (x[k] - mean[k]) / std[k]
@@ -57,6 +62,17 @@ def _normalize(x, mean, std, clip, out):
         elif v < -clip:
             v = -clip
         out[k] = v
+
+
+@njit(fastmath=True, cache=True)
+def _proj(x, Wp, bp, out):
+    """Input projection: out = GELU(Wp x + bp), exact (erf) GELU like nn.GELU()."""
+    F = x.shape[0]
+    for j in range(out.shape[0]):
+        s = bp[j]
+        for k in range(F):
+            s += x[k] * Wp[j, k]
+        out[j] = 0.5 * s * (1.0 + math.erf(s * 0.7071067811865476))
 
 
 @njit(fastmath=True, cache=True)
@@ -114,7 +130,7 @@ def _head(h, ln_g, ln_b, WlT, bl, out, use_ln, tmp):
 
 def export_npz(model, path: str, aug: bool = False, bank: str = ""):
     """Dump GRUModel weights in the layout the kernels expect. bank: EMA-bank spec (wnn.features.parse_bank)."""
-    from .features import N_BLOCKS, parse_bank
+    N_BLOCKS, parse_bank = _feat.N_BLOCKS, _feat.parse_bank
 
     sd = {k: v.detach().cpu().numpy().astype(np.float32) for k, v in model.state_dict().items()}
     n_in = len(sd["mean"])
@@ -125,7 +141,8 @@ def export_npz(model, path: str, aug: bool = False, bank: str = ""):
         alphas, scaled = parse_bank(bank)
         d["bank_alphas"] = alphas; d["bank_scaled"] = np.int32(1 if scaled else 0)
         d["n_raw"] = np.int32(n_in // (1 + len(alphas)))
-    assert model.proj is None, "input projection not supported by the kernel yet"
+    if model.proj is not None:  # nn.Sequential(Linear, GELU)
+        d["Wp"] = np.ascontiguousarray(sd["proj.0.weight"]); d["bp"] = sd["proj.0.bias"]
     for l in range(model.layers):
         d[f"WiT{l}"] = np.ascontiguousarray(sd[f"gru.weight_ih_l{l}"])  # (3H, in)
         d[f"WhT{l}"] = np.ascontiguousarray(sd[f"gru.weight_hh_l{l}"])  # (3H, H)
@@ -168,6 +185,8 @@ class StepModel:
         self.xa = np.zeros(len(self.mean), f)
         self.first = True
         self.xn = np.zeros(len(self.mean), f)
+        self.Wp, self.bp = (z["Wp"], z["bp"]) if "Wp" in z else (None, None)
+        self.xp = np.zeros(len(self.bp) if self.bp is not None else 1, f)
         self.h = [np.zeros(self.H, f) for _ in range(self.L)]
         self.gi = np.zeros(3 * self.H, f); self.gh = np.zeros(3 * self.H, f)
         self.tmp = np.zeros(self.H, f); self.out = np.zeros(2, f)
@@ -181,19 +200,13 @@ class StepModel:
 
     def _augment(self, x):
         if self.bank:
-            if HAVE_NUMBA:
-                from .features import bank_step as _bank
-            else:
-                from .features import bank_step_numpy as _bank
+            _bank = _feat.bank_step if HAVE_NUMBA else _feat.bank_step_numpy
             _bank(x, self.alphas, self.scaled, self.ema, self.sc, self.first, self.xa)
             self.first = False
             return self.xa
         if not self.aug:
             return x
-        if HAVE_NUMBA:
-            from .features import augment_step as _aug
-        else:
-            from .features import augment_step_numpy as _aug
+        _aug = _feat.augment_step if HAVE_NUMBA else _feat.augment_step_numpy
         _aug(x, self.fstate, self.first, self.xa)
         self.first = False
         return self.xa
@@ -201,7 +214,11 @@ class StepModel:
     def _step_numpy(self, x: np.ndarray) -> np.ndarray:
         H = self.H
         x = self._augment(x)
-        inp = np.clip(np.nan_to_num((x - self.mean) / self.std, nan=0.0), -self.clip, self.clip)
+        inp = np.clip(np.nan_to_num((x - self.mean) / self.std, nan=0.0, posinf=self.clip, neginf=-self.clip),
+                      -self.clip, self.clip)
+        if self.Wp is not None:
+            s = self.Wp @ inp + self.bp
+            inp = (0.5 * s * (1.0 + np.array([math.erf(v * 0.7071067811865476) for v in s], np.float32))).astype(np.float32)
         for l, (WiT, WhT, bi, bh) in enumerate(self.W):
             h = self.h[l]
             gi = WiT @ inp + bi
@@ -226,6 +243,9 @@ class StepModel:
         x = self._augment(x)
         _normalize(x, self.mean, self.std, self.clip, self.xn)
         inp = self.xn
+        if self.Wp is not None:
+            _proj(inp, self.Wp, self.bp, self.xp)
+            inp = self.xp
         for l, (WiT, WhT, bi, bh) in enumerate(self.W):
             _gru_layer(inp, self.h[l], WiT, WhT, bi, bh, self.gi, self.gh)
             inp = self.h[l]

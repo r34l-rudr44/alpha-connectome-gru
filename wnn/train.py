@@ -75,8 +75,7 @@ def evaluate(model, loader, device, max_batches=None):
         if max_batches and b >= max_batches:
             break
         X = X.to(device, non_blocking=True)
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-            pred, _ = model(X)
+        pred, _ = model(X)  # always fp32: the deployed kernel is fp32
         pred = pred.float().cpu()
         m = need & scored
         ys.append(y[m].numpy()); ps.append(pred[m].numpy())
@@ -97,6 +96,15 @@ def train(args):
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     torch.backends.cudnn.benchmark = True
 
+    ck0 = None
+    if args.init:  # fine-tune: architecture, input transform and normalisation come from the checkpoint
+        ck0 = torch.load(args.init, map_location="cpu", weights_only=False)
+        for k in ("hidden", "layers", "in_proj", "x_clip", "aug", "bank", "head", "head_layers"):
+            if k in ck0["args"]:
+                setattr(args, k, ck0["args"][k])
+        print(f"init from {args.init} (score {max(h['score'] for h in ck0['hist']):.4f})", flush=True)
+    sw_true = args.scored_weight if args.scored_weight >= 0 else None
+
     if args.synthetic:
         tr_ds, va_ds = SyntheticDataset(64, 2000, aug=args.aug, bank=args.bank), SyntheticDataset(16, 2000, seed=1000, aug=args.aug, bank=args.bank)
     else:
@@ -109,15 +117,25 @@ def train(args):
         tr_ds = SeqDataset(args.train, feat=None, aug=args.aug, soft_path=soft_tr, weight_path=w_tr, seq_weight_path=sw_tr, bank=args.bank)
         if args.max_train:
             tr_ds.indices = tr_ds.indices[: args.max_train]
-        if args.holdout_frac > 0:  # train on train + (1-frac) of valid; select on the frac holdout
+        if args.holdout_frac > 0 or args.valid_only:
+            # holdout: train on train + (1-frac) of valid, select on the frac holdout.
+            # valid_only: drop the train set (fine-tune stage on the most recent, mask-labelled period).
+            # valid_only without a holdout fits ALL of valid; the "validation" score is then in-sample -> use --select last.
             from torch.utils.data import ConcatDataset
             from wnn.data import holdout_split
 
-            rest, hold = holdout_split(args.valid, args.holdout_frac, args.holdout_seed)
+            if args.holdout_frac > 0:
+                rest, hold = holdout_split(args.valid, args.holdout_frac, args.holdout_seed)
+            else:
+                import pyarrow.parquet as pq
+
+                rest = hold = list(range(pq.ParquetFile(args.valid).num_row_groups))
             va_ds = SeqDataset(args.valid, indices=hold, feat=tr_ds.feat, aug=args.aug, bank=args.bank)
-            tr_ds = ConcatDataset([tr_ds, SeqDataset(args.valid, indices=rest, feat=va_ds.feat, aug=args.aug,
-                                                     soft_path=soft_va, weight_path=w_va, seq_weight_path=sw_va, bank=args.bank)])
-            print(f"holdout: {len(hold)} valid seqs held out, {len(rest)} added to training", flush=True)
+            va_part = SeqDataset(args.valid, indices=rest, feat=va_ds.feat, aug=args.aug, soft_path=soft_va,
+                                 weight_path=w_va, seq_weight_path=sw_va, bank=args.bank, scored_weight=sw_true)
+            tr_ds = va_part if args.valid_only else ConcatDataset([tr_ds, va_part])
+            print(f"holdout: {len(hold)} valid seqs for selection, {len(rest)} valid seqs in training"
+                  f"{' (valid only)' if args.valid_only else ''}", flush=True)
         else:
             va_ds = SeqDataset(args.valid, feat=tr_ds.feat, aug=args.aug, bank=args.bank)
         if args.max_valid:
@@ -125,19 +143,29 @@ def train(args):
     n_feat = tr_ds[0][0].shape[1]
     print(f"device={device} train_seqs={len(tr_ds)} valid_seqs={len(va_ds)} features={n_feat}", flush=True)
 
-    mean, std = compute_feature_stats(tr_ds, n=args.stats_seqs, seed=args.seed)
+    if ck0 is not None:
+        mean, std = np.asarray(ck0["mean"], np.float32), np.asarray(ck0["std"], np.float32)
+    else:
+        mean, std = compute_feature_stats(tr_ds, n=args.stats_seqs, seed=args.seed)
     np.savez(out / "norm.npz", mean=mean, std=std)
 
     model = GRUModel(n_feat, args.hidden, args.layers, args.in_proj, args.dropout, args.x_clip, chrono=args.chrono,
                      head=args.head, head_layers=args.head_layers).to(device)
     model.set_stats(mean, std)
+    if ck0 is not None:
+        model.load_state_dict(ck0["model"])
     print(f"params={sum(p.numel() for p in model.parameters()):,}", flush=True)
 
     tr = DataLoader(tr_ds, batch_size=args.batch, shuffle=True, num_workers=args.workers,
                     pin_memory=device.type == "cuda", drop_last=True, persistent_workers=args.workers > 0)
     va = DataLoader(va_ds, batch_size=args.batch, shuffle=False, num_workers=args.workers, pin_memory=device.type == "cuda")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    if args.no_bias_decay:  # weight decay on weight matrices only (biases and LayerNorm are exempt; keeps the chrono gate bias)
+        dec = [p for n, p in model.named_parameters() if p.ndim >= 2]
+        nod = [p for n, p in model.named_parameters() if p.ndim < 2]
+        opt = torch.optim.AdamW([{"params": dec, "weight_decay": args.wd}, {"params": nod, "weight_decay": 0.0}], lr=args.lr)
+    else:
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     steps_per_epoch = len(tr) * math.ceil(tr_ds[0][0].shape[0] / args.tbptt)
     total = steps_per_epoch * args.epochs
     if args.sched == "cosine":  # linear warm-up over pct_start, then cosine to 0 (no momentum cycling)
@@ -179,6 +207,10 @@ def train(args):
 
     std_t = torch.as_tensor(std, device=device)
     best, hist, step = -1.0, [], 0
+    if args.eval_first:  # score of the initial weights on the selection set (reference point for a fine-tune)
+        r = evaluate(model, va, device, args.eval_batches)
+        r.update(epoch=-1, train_loss=float("nan"), secs=0.0)
+        hist.append(r); print(json.dumps(r), flush=True)
     for ep in range(args.epochs):
         t0 = time.time(); run_loss = 0.0; nb = 0
         for X, y, need, scored, soft, rw in tr:
@@ -191,7 +223,7 @@ def train(args):
                 X = X * s
             # per-step loss weights: need mask times (optional) row weights^pow, e.g. P(is_scored | x) from modal/mask_model.py
             mw = need.float()
-            if args.weight_dir or args.seq_weight_dir:
+            if args.weight_dir or args.seq_weight_dir or sw_true is not None:
                 rw = rw.to(device, non_blocking=True).clamp_min(0)
                 if args.weight_thresh > 0:  # hard selection: keep rows with P >= thresh (plus floor)
                     rw = (rw >= args.weight_thresh).float()
@@ -204,7 +236,7 @@ def train(args):
             h = model.init_state(B, device)
             for s in range(0, T, args.tbptt):
                 e = min(s + args.tbptt, T)
-                with torch.autocast(device_type=device.type, dtype=scaler_dtype, enabled=device.type == "cuda"):
+                with torch.autocast(device_type=device.type, dtype=scaler_dtype, enabled=args.amp and device.type == "cuda"):
                     pred, h = model(X[:, s:e], h)
                 loss = args.hard_lambda * loss_fn(pred.float(), y[:, s:e], mw[:, s:e], args.loss)
                 if args.soft_dir and args.soft_lambda > 0:  # distillation: match the teacher's soft labels
@@ -239,6 +271,8 @@ def train(args):
             cands.append(("swa", swa, rs))
         hist.append(r); print(json.dumps(r), flush=True)
         torch.save({"model": model.state_dict(), "args": vars(args), "mean": mean, "std": std, "hist": hist}, out / "last.pt")
+        if args.select == "last":  # no selection on the score (e.g. final fit on all of valid): keep the newest weights
+            best, cands = -1.0, cands[-1:]
         for tag, mdl, rr in cands:
             if rr["score"] > best:
                 best = rr["score"]
@@ -246,7 +280,7 @@ def train(args):
                 export_npz(mdl, str(out / "weights.npz"), aug=args.aug, bank=args.bank)
                 if args.onnx and not args.aug:
                     try:
-                        export_onnx(mdl, str(out / "model.onnx")); mdl.to(device)
+                        export_onnx(mdl, str(out / "model.onnx")); mdl.to(device); model.train()
                     except Exception as e:  # onnx is optional; numba path is primary
                         print("onnx export failed:", e, flush=True)
     (out / "hist.json").write_text(json.dumps(hist, indent=1))
@@ -300,6 +334,14 @@ def get_parser():
     p.add_argument("--sched", default="onecycle", choices=["onecycle", "cosine"])
     p.add_argument("--pct-start", type=float, default=0.1, help="warm-up fraction of the schedule")
     p.add_argument("--scale-aug", type=float, default=0.0, help="per-sequence multiplicative input scale augmentation, e.g. 0.3 (0 = off)")
+    p.add_argument("--amp", action="store_true", help="bf16 autocast in training (the runs before 2026-11-11 used it); evaluation is always fp32")
+    p.add_argument("--no-bias-decay", action="store_true", help="apply --wd to weight matrices only")
+    p.add_argument("--init", default="", help="best.pt to initialise from (fine-tune); architecture and normalisation are taken from it")
+    p.add_argument("--valid-only", action="store_true", help="train only on valid sequences (the non-held-out ones with --holdout-frac, else all of valid)")
+    p.add_argument("--scored-weight", type=float, default=-1.0,
+                   help="valid sequences in the training set: row weight = 1 on is_scored rows and this value elsewhere (true mask); <0 = off")
+    p.add_argument("--eval-first", action="store_true", help="evaluate the initial weights before training (epoch -1 in hist)")
+    p.add_argument("--select", default="best", choices=["best", "last"], help="export the best-scoring epoch, or always the last one")
     p.add_argument("--bank", default="", help="EMA-bank input features: half-lives 'h1,h2,...' (+':s' for scale-normalised), e.g. '100,300,1000,3000'")
     p.add_argument("--swa-start", type=float, default=0.0, help="SWA from this fraction of total steps (0 = off); lr held at lr*swa_lr from then on")
     p.add_argument("--swa-lr", type=float, default=0.25, help="SWA constant lr as a fraction of --lr")
