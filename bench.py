@@ -36,6 +36,41 @@ def load_solution(subdir: Path):
     return mod.PredictionModel, DataPoint
 
 
+def reference_us_per_step(X, n_steps=20000):
+    """us/step of one random GRU-128 through the same numba kernel, measured in this process (same machine load).
+
+    Absolute laptop timings are useless as a verdict (the scorer core is several times faster and the laptop is
+    usually loaded); the ratio "submission us/step : bare GRU-128 kernel us/step" is what transfers. The ratio
+    includes the Python call overhead and the cache cost of several weight sets, so 3 models are about 5 units.
+    Calibration against scored submissions (2026-11-11, 2 sequences each):
+        gru128.zip  (1 x GRU-128)        1.6 units -> 11.5 min on the scorer
+        ens3_r1.zip (3 x GRU-128)        4.9 units -> 32-34 min
+        ens4.zip    (4 models, 2.2 MB)   7.4 units -> 56.4 min (too close to the 60-min limit)
+    i.e. roughly 7-8 scorer minutes per unit; the scorer itself varies by +-5%, sometimes +30%.
+    """
+    import tempfile
+
+    from wnn.infer import StepModel
+
+    rng = np.random.default_rng(0); H, F = 128, X.shape[1]; f = np.float32
+    d = {"mean": np.zeros(F, f), "std": np.ones(F, f), "x_clip": f(10), "layers": np.int32(1), "hidden": np.int32(H),
+         "aug": np.int32(0), "n_raw": np.int32(F), "WiT0": (rng.normal(size=(3 * H, F)) * 0.05).astype(f),
+         "WhT0": (rng.normal(size=(3 * H, H)) * 0.05).astype(f), "bi0": np.zeros(3 * H, f), "bh0": np.zeros(3 * H, f),
+         "use_ln": np.int32(1), "ln_g": np.ones(H, f), "ln_b": np.zeros(H, f), "n_hw": np.int32(0),
+         "WlT": (rng.normal(size=(2, H)) * 0.05).astype(f), "bl": np.zeros(2, f)}
+    with tempfile.TemporaryDirectory() as tmp:
+        np.savez(f"{tmp}/ref.npz", **d)
+        sm = StepModel(f"{tmp}/ref.npz")
+    n = min(n_steps, len(X))
+    t0 = time.perf_counter()
+    for i in range(n):
+        sm.step(X[i])
+    return (time.perf_counter() - t0) / n * 1e6
+
+
+SAFE_UNITS = 5.8  # about 40-45 scorer minutes (see reference_us_per_step); 7.4 units took 56 of the 60 minutes
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("subdir", type=Path)
@@ -82,9 +117,11 @@ def main():
         masks.append(m)
 
     us = t_model / steps * 1e6
-    verdict = "OK" if us <= config.LOCAL_TARGET_US_PER_STEP else "TOO SLOW"
-    print(f"{steps:,} steps in {t_model:.1f}s -> {us:.1f} us/step  [{verdict}; local target {config.LOCAL_TARGET_US_PER_STEP:.0f}, scorer budget {config.BUDGET_US_PER_STEP:.0f}]")
-    print(f"projected scorer time at this speed: {us * config.TEST_STEPS / 60e6:.1f} min")
+    ref = reference_us_per_step(X)
+    eq = us / ref
+    verdict = "OK" if eq <= SAFE_UNITS else "RISKY: may exceed the 60-minute limit"
+    print(f"{steps:,} steps in {t_model:.1f}s -> {us:.1f} us/step on this machine; bare GRU-128 kernel here: {ref:.1f} us/step")
+    print(f"= {eq:.2f} units [{verdict}; safe <= {SAFE_UNITS}; scored references: 1.6 units = 11.5 min, 4.9 = 33 min, 7.4 = 56 min]")
     if has_targets:
         print(score(np.concatenate(ys), np.concatenate(preds), np.concatenate(masks)))
 
