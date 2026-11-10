@@ -128,7 +128,8 @@ def train(args):
     mean, std = compute_feature_stats(tr_ds, n=args.stats_seqs, seed=args.seed)
     np.savez(out / "norm.npz", mean=mean, std=std)
 
-    model = GRUModel(n_feat, args.hidden, args.layers, args.in_proj, args.dropout, args.x_clip, chrono=args.chrono).to(device)
+    model = GRUModel(n_feat, args.hidden, args.layers, args.in_proj, args.dropout, args.x_clip, chrono=args.chrono,
+                     head=args.head, head_layers=args.head_layers).to(device)
     model.set_stats(mean, std)
     print(f"params={sum(p.numel() for p in model.parameters()):,}", flush=True)
 
@@ -139,7 +140,12 @@ def train(args):
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     steps_per_epoch = len(tr) * math.ceil(tr_ds[0][0].shape[0] / args.tbptt)
     total = steps_per_epoch * args.epochs
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=total, pct_start=0.1)
+    if args.sched == "cosine":  # linear warm-up over pct_start, then cosine to 0 (no momentum cycling)
+        warm = max(1, int(args.pct_start * total))
+        sched = torch.optim.lr_scheduler.LambdaLR(
+            opt, lambda s: (s + 1) / warm if s < warm else 0.5 * (1 + math.cos(math.pi * min(1.0, (s - warm) / max(1, total - warm)))))
+    else:
+        sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=total, pct_start=args.pct_start)
     scaler_dtype = torch.bfloat16
 
     ema = None
@@ -180,6 +186,9 @@ def train(args):
             soft = soft.to(device, non_blocking=True)
             if args.in_noise > 0:  # Gaussian input noise in units of each feature's std (regularizer)
                 X = X + torch.randn_like(X) * (std_t * args.in_noise)
+            if args.scale_aug > 0:  # per-sequence random rescale of the raw inputs, log-uniform in [1/(1+a), 1+a] (regime-shift augmentation)
+                s = torch.exp((torch.rand(X.shape[0], 1, 1, device=device) * 2 - 1) * math.log(1 + args.scale_aug))
+                X = X * s
             # per-step loss weights: need mask times (optional) row weights^pow, e.g. P(is_scored | x) from modal/mask_model.py
             mw = need.float()
             if args.weight_dir or args.seq_weight_dir:
@@ -286,6 +295,11 @@ def get_parser():
     p.add_argument("--weight-thresh", type=float, default=0.0, help="hard selection: row weight = 1[P >= thresh] (0 = off)")
     p.add_argument("--seq-weight-dir", default="", help="dir with train.npy/valid.npy per-sequence weight multipliers (n_row_groups,)")
     p.add_argument("--chrono", type=float, default=0.0, help="chrono init of the GRU update gate with T log-uniform in [1, chrono] (0 = off)")
+    p.add_argument("--head", default="linear", choices=["linear", "highway"], help="output head: LayerNorm+Linear or LayerNorm+Highway blocks+Linear")
+    p.add_argument("--head-layers", type=int, default=1, help="number of Highway blocks for --head highway")
+    p.add_argument("--sched", default="onecycle", choices=["onecycle", "cosine"])
+    p.add_argument("--pct-start", type=float, default=0.1, help="warm-up fraction of the schedule")
+    p.add_argument("--scale-aug", type=float, default=0.0, help="per-sequence multiplicative input scale augmentation, e.g. 0.3 (0 = off)")
     p.add_argument("--bank", default="", help="EMA-bank input features: half-lives 'h1,h2,...' (+':s' for scale-normalised), e.g. '100,300,1000,3000'")
     p.add_argument("--swa-start", type=float, default=0.0, help="SWA from this fraction of total steps (0 = off); lr held at lr*swa_lr from then on")
     p.add_argument("--swa-lr", type=float, default=0.25, help="SWA constant lr as a fraction of --lr")

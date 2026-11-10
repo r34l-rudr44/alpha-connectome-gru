@@ -5,9 +5,24 @@ import torch
 import torch.nn as nn
 
 
-class GRUModel(nn.Module):
-    def __init__(self, n_features=112, hidden=128, layers=1, in_proj=0, dropout=0.0, x_clip=10.0, chrono=0.0):
+class Highway(nn.Module):
+    """h <- g * relu(Wt h + bt) + (1 - g) * h, g = sigmoid(Wg h + bg) (Srivastava et al. 2015); gate bias starts at -1."""
+
+    def __init__(self, d):
         super().__init__()
+        self.gate = nn.Linear(d, d); self.lin = nn.Linear(d, d)
+        nn.init.constant_(self.gate.bias, -1.0)
+
+    def forward(self, h):
+        g = torch.sigmoid(self.gate(h))
+        return g * torch.relu(self.lin(h)) + (1 - g) * h
+
+
+class GRUModel(nn.Module):
+    def __init__(self, n_features=112, hidden=128, layers=1, in_proj=0, dropout=0.0, x_clip=10.0, chrono=0.0,
+                 head="linear", head_layers=1):
+        super().__init__()
+        self.head_kind, self.head_layers = head, head_layers
         self.register_buffer("mean", torch.zeros(n_features))
         self.register_buffer("std", torch.ones(n_features))
         self.x_clip = x_clip
@@ -19,7 +34,10 @@ class GRUModel(nn.Module):
             d_in = in_proj
         self.gru = nn.GRU(d_in, hidden, num_layers=layers, batch_first=True,
                           dropout=dropout if layers > 1 else 0.0)
-        self.head = nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, 2))
+        if head == "highway":  # LayerNorm -> k Highway blocks -> Linear
+            self.head = nn.Sequential(nn.LayerNorm(hidden), *[Highway(hidden) for _ in range(head_layers)], nn.Linear(hidden, 2))
+        else:
+            self.head = nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, 2))
         if chrono > 0:  # chrono initialisation (Tallec & Ollivier 2018): update-gate bias = log T, T log-uniform in [1, chrono]
             with torch.no_grad():
                 for k in range(layers):

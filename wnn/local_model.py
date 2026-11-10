@@ -103,6 +103,7 @@ def build_from_ckpt(ck):
     else:
         from wnn.model import GRUModel
 
-        m = GRUModel(n, a["hidden"], a["layers"], a["in_proj"], a["dropout"], a["x_clip"])
+        m = GRUModel(n, a["hidden"], a["layers"], a["in_proj"], a["dropout"], a["x_clip"],
+                     head=a.get("head", "linear"), head_layers=a.get("head_layers", 1))
     m.load_state_dict(ck["model"]); m.eval()
     return m

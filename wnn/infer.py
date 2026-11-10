@@ -60,28 +60,56 @@ def _normalize(x, mean, std, clip, out):
 
 
 @njit(fastmath=True, cache=True)
-def _head(h, ln_g, ln_b, WlT, bl, out, use_ln, tmp):
+def _layernorm(h, ln_g, ln_b, tmp):
     H = h.shape[0]
-    if use_ln:
-        m = 0.0
+    m = 0.0
+    for k in range(H):
+        m += h[k]
+    m /= H
+    v = 0.0
+    for k in range(H):
+        d = h[k] - m
+        v += d * d
+    inv = 1.0 / math.sqrt(v / H + 1e-5)
+    for k in range(H):
+        tmp[k] = (h[k] - m) * inv * ln_g[k] + ln_b[k]
+
+
+@njit(fastmath=True, cache=True)
+def _highway(h, Wg, bg, Wt, bt, tmp):
+    """in-place h <- g*relu(Wt h + bt) + (1-g)*h with g = sigmoid(Wg h + bg); tmp (H,) scratch."""
+    H = h.shape[0]
+    for j in range(H):
+        sg = bg[j]; st = bt[j]
         for k in range(H):
-            m += h[k]
-        m /= H
-        v = 0.0
-        for k in range(H):
-            d = h[k] - m
-            v += d * d
-        inv = 1.0 / math.sqrt(v / H + 1e-5)
-        for k in range(H):
-            tmp[k] = (h[k] - m) * inv * ln_g[k] + ln_b[k]
-    else:
-        for k in range(H):
-            tmp[k] = h[k]
+            sg += h[k] * Wg[j, k]; st += h[k] * Wt[j, k]
+        g = 1.0 / (1.0 + math.exp(-sg))
+        if st < 0.0:
+            st = 0.0
+        tmp[j] = g * st + (1.0 - g) * h[j]
+    for j in range(H):
+        h[j] = tmp[j]
+
+
+@njit(fastmath=True, cache=True)
+def _linear_out(tmp, WlT, bl, out):
+    H = tmp.shape[0]
     for o in range(out.shape[0]):
         s = bl[o]
         for k in range(H):
             s += tmp[k] * WlT[o, k]
         out[o] = s
+
+
+@njit(fastmath=True, cache=True)
+def _head(h, ln_g, ln_b, WlT, bl, out, use_ln, tmp):
+    H = h.shape[0]
+    if use_ln:
+        _layernorm(h, ln_g, ln_b, tmp)
+    else:
+        for k in range(H):
+            tmp[k] = h[k]
+    _linear_out(tmp, WlT, bl, out)
 
 
 def export_npz(model, path: str, aug: bool = False, bank: str = ""):
@@ -105,7 +133,13 @@ def export_npz(model, path: str, aug: bool = False, bank: str = ""):
         d[f"bh{l}"] = sd[f"gru.bias_hh_l{l}"]
     d["use_ln"] = np.int32(1)
     d["ln_g"], d["ln_b"] = sd["head.0.weight"], sd["head.0.bias"]
-    d["WlT"], d["bl"] = np.ascontiguousarray(sd["head.1.weight"]), sd["head.1.bias"]
+    n_hw = sum(1 for k in sd if k.startswith("head.") and k.endswith(".gate.weight"))
+    d["n_hw"] = np.int32(n_hw)
+    for i in range(n_hw):  # head.1 .. head.n_hw are Highway blocks
+        d[f"HWg{i}"] = np.ascontiguousarray(sd[f"head.{i + 1}.gate.weight"]); d[f"HWbg{i}"] = sd[f"head.{i + 1}.gate.bias"]
+        d[f"HWt{i}"] = np.ascontiguousarray(sd[f"head.{i + 1}.lin.weight"]); d[f"HWbt{i}"] = sd[f"head.{i + 1}.lin.bias"]
+    last = f"head.{n_hw + 1}"
+    d["WlT"], d["bl"] = np.ascontiguousarray(sd[f"{last}.weight"]), sd[f"{last}.bias"]
     np.savez(path, **d)
     return path
 
@@ -121,6 +155,9 @@ class StepModel:
         self.use_ln = bool(int(z["use_ln"]))
         self.ln_g, self.ln_b, self.WlT, self.bl = z["ln_g"], z["ln_b"], z["WlT"], z["bl"]
         f = np.float32
+        n_hw = int(z["n_hw"]) if "n_hw" in z else 0
+        self.hw = [(z[f"HWg{i}"], z[f"HWbg{i}"], z[f"HWt{i}"], z[f"HWbt{i}"]) for i in range(n_hw)]
+        self.tmp2 = np.zeros(self.H, f)
         self.aug = bool(int(z["aug"])) if "aug" in z else False
         self.n_raw = int(z["n_raw"]) if "n_raw" in z else len(self.mean)
         self.fstate = np.zeros((4, self.n_raw), f)
@@ -177,6 +214,9 @@ class StepModel:
         if self.use_ln:
             m = inp.mean(); v = ((inp - m) ** 2).mean()
             inp = (inp - m) / np.sqrt(v + 1e-5) * self.ln_g + self.ln_b
+        for Wg, bg, Wt, bt in self.hw:
+            g = 1.0 / (1.0 + np.exp(-(Wg @ inp + bg)))
+            inp = g * np.maximum(Wt @ inp + bt, 0.0) + (1.0 - g) * inp
         self.out[:] = self.WlT @ inp + self.bl
         return self.out
 
@@ -189,5 +229,11 @@ class StepModel:
         for l, (WiT, WhT, bi, bh) in enumerate(self.W):
             _gru_layer(inp, self.h[l], WiT, WhT, bi, bh, self.gi, self.gh)
             inp = self.h[l]
-        _head(inp, self.ln_g, self.ln_b, self.WlT, self.bl, self.out, self.use_ln, self.tmp)
+        if self.hw:
+            _layernorm(inp, self.ln_g, self.ln_b, self.tmp)
+            for Wg, bg, Wt, bt in self.hw:
+                _highway(self.tmp, Wg, bg, Wt, bt, self.tmp2)
+            _linear_out(self.tmp, self.WlT, self.bl, self.out)
+        else:
+            _head(inp, self.ln_g, self.ln_b, self.WlT, self.bl, self.out, self.use_ln, self.tmp)
         return self.out
