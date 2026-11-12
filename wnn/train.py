@@ -167,6 +167,38 @@ def train(args):
         opt = torch.optim.AdamW([{"params": dec, "weight_decay": args.wd}, {"params": nod, "weight_decay": 0.0}], lr=args.lr)
     else:
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    # Hindsight heads (training only, never exported): from the GRU state at step t, also output y[t-h] for each
+    # delay h. The label window of y[t-h] is partly realised by step t, so this is a decoding task that pushes the
+    # state to carry realised label-space moves. Costs nothing at inference.
+    hind_H = [int(v) for v in args.hind.split(",") if v] if args.hind else []
+    hind_head, gru_out = None, {}
+    if hind_H:
+        hind_head = torch.nn.Sequential(torch.nn.LayerNorm(args.hidden), torch.nn.Linear(args.hidden, 2 * len(hind_H))).to(device)
+        model.gru.register_forward_hook(lambda mod, inp, outp: gru_out.__setitem__("o", outp[0]))
+        opt.add_param_group({"params": list(hind_head.parameters()), "weight_decay": 0.0})
+
+    def hind_targets(y):  # (B,T,2) -> delayed clipped labels (B,T,2K) and validity mask (B,T,2K)
+        yc = y.clamp(-CLIP, CLIP)
+        D = torch.zeros(y.shape[0], y.shape[1], 2 * len(hind_H), device=y.device)
+        M = torch.zeros_like(D)
+        for j, hh in enumerate(hind_H):
+            D[:, hh:, 2 * j:2 * j + 2] = yc[:, :-hh]; M[:, hh:, 2 * j:2 * j + 2] = 1.0
+        return D, M
+
+    @torch.no_grad()
+    def hind_eval(max_batches=6):  # Pearson of the decoded y[t-h] with the truth on the selection set, per delay
+        model.eval(); hind_head.eval(); a, b = [], []
+        for k, (X, y, *_) in enumerate(va):
+            if k >= max_batches:
+                break
+            model(X.to(device)); D, _ = hind_targets(y.to(device))
+            a.append(hind_head(gru_out["o"].float())[:, 500:].reshape(-1, D.shape[-1]).cpu().numpy())
+            b.append(D[:, 500:].reshape(-1, D.shape[-1]).cpu().numpy())
+        model.train(); hind_head.train()
+        a, b = np.concatenate(a), np.concatenate(b)
+        return {str(hh): float(np.mean([np.corrcoef(a[:, 2 * j + c], b[:, 2 * j + c])[0, 1] for c in (0, 1)]))
+                for j, hh in enumerate(hind_H)}
+
     steps_per_epoch = len(tr) * math.ceil(tr_ds[0][0].shape[0] / args.tbptt)
     total = steps_per_epoch * args.epochs
     if args.sched == "cosine":  # linear warm-up over pct_start, then cosine to 0 (no momentum cycling)
@@ -234,6 +266,8 @@ def train(args):
                 y = F.avg_pool1d(y.transpose(1, 2), kernel_size=2 * k + 1, stride=1, padding=k,
                                  count_include_pad=False).transpose(1, 2)
             B, T, _ = X.shape
+            if hind_H:
+                hD, hM = hind_targets(y)
             h = model.init_state(B, device)
             for s in range(0, T, args.tbptt):
                 e = min(s + args.tbptt, T)
@@ -242,6 +276,9 @@ def train(args):
                 loss = args.hard_lambda * loss_fn(pred.float(), y[:, s:e], mw[:, s:e], args.loss)
                 if args.soft_dir and args.soft_lambda > 0:  # distillation: match the teacher's soft labels
                     loss = loss + args.soft_lambda * soft_loss(pred.float(), soft[:, s:e], y[:, s:e], mw[:, s:e])
+                if hind_H:
+                    hp = hind_head(gru_out["o"].float())
+                    loss = loss + args.hind_lambda * ((hp - hD[:, s:e]) ** 2 * hM[:, s:e]).sum() / hM[:, s:e].sum().clamp_min(1.0)
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -261,6 +298,8 @@ def train(args):
                 print(f"ep {ep} batch {nb} loss {run_loss / nb:.4f} lr {sched.get_last_lr()[0]:.2e} {time.time() - t0:.0f}s", flush=True)
         r = evaluate(model, va, device, args.eval_batches)
         r.update(epoch=ep, train_loss=run_loss / max(nb, 1), secs=time.time() - t0)
+        if hind_H:
+            r["hind"] = hind_eval()
         cands = [("raw", model, r)]
         if ema is not None:
             re_ = evaluate(ema, va, device, args.eval_batches)
@@ -338,6 +377,8 @@ def get_parser():
     p.add_argument("--amp", action="store_true", help="bf16 autocast in training (the runs before 2026-11-11 used it); evaluation is always fp32")
     p.add_argument("--no-bias-decay", action="store_true", help="apply --wd to weight matrices only")
     p.add_argument("--init", default="", help="best.pt to initialise from (fine-tune); architecture and normalisation are taken from it")
+    p.add_argument("--hind", default="", help="comma-separated delays h: auxiliary heads that output y[t-h] at step t (training only)")
+    p.add_argument("--hind-lambda", type=float, default=0.5, help="weight of the hindsight loss")
     p.add_argument("--valid-rep", type=int, default=1, help="with --holdout-frac: repeat the valid training sequences this many times per epoch")
     p.add_argument("--valid-only", action="store_true", help="train only on valid sequences (the non-held-out ones with --holdout-frac, else all of valid)")
     p.add_argument("--scored-weight", type=float, default=-1.0,
