@@ -133,7 +133,8 @@ def train(args):
             va_ds = SeqDataset(args.valid, indices=hold, feat=tr_ds.feat, aug=args.aug, bank=args.bank)
             va_part = SeqDataset(args.valid, indices=rest, feat=va_ds.feat, aug=args.aug, soft_path=soft_va,
                                  weight_path=w_va, seq_weight_path=sw_va, bank=args.bank, scored_weight=sw_true)
-            tr_ds = va_part if args.valid_only else ConcatDataset([tr_ds, va_part])
+            # --valid-rep k: each valid sequence appears k times per epoch (more weight on the most recent period)
+            tr_ds = va_part if args.valid_only else ConcatDataset([tr_ds] + [va_part] * max(1, args.valid_rep))
             print(f"holdout: {len(hold)} valid seqs for selection, {len(rest)} valid seqs in training"
                   f"{' (valid only)' if args.valid_only else ''}", flush=True)
         else:
@@ -337,6 +338,7 @@ def get_parser():
     p.add_argument("--amp", action="store_true", help="bf16 autocast in training (the runs before 2026-11-11 used it); evaluation is always fp32")
     p.add_argument("--no-bias-decay", action="store_true", help="apply --wd to weight matrices only")
     p.add_argument("--init", default="", help="best.pt to initialise from (fine-tune); architecture and normalisation are taken from it")
+    p.add_argument("--valid-rep", type=int, default=1, help="with --holdout-frac: repeat the valid training sequences this many times per epoch")
     p.add_argument("--valid-only", action="store_true", help="train only on valid sequences (the non-held-out ones with --holdout-frac, else all of valid)")
     p.add_argument("--scored-weight", type=float, default=-1.0,
                    help="valid sequences in the training set: row weight = 1 on is_scored rows and this value elsewhere (true mask); <0 = off")
