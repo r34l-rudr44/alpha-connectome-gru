@@ -1,0 +1,18 @@
+# Core: training, export and inference
+numpy
+torch>=2.5
+pyarrow
+numba
+
+# ONNX export and the onnxruntime inference backend (optional)
+onnx
+onnxscript
+onnxruntime
+
+# Analysis probes and mask models
+scipy
+scikit-learn
+lightgbm
+
+# Remote jobs in modal/
+modal

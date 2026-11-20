@@ -1,13 +1,18 @@
-# data and caches live outside the repo
+# Competition data and derived arrays live outside version control
+data/
+sample/
+cache/
 *.parquet
 *.tar.gz
 *.npy
 *.npz
-cache/
+
+# Training runs and packed submissions
 runs/
+submissions/
+
+# Python
 __pycache__/
 *.pyc
 .venv/
-submissions/*.zip
-sample/
-submissions/*/
+.numba_cache/
