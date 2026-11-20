@@ -1,4 +1,4 @@
-"""Mask model v2: a sequence model for P(is_scored | sequence), trained on 80% of valid, scored on the 20% holdout.
+"""Sequence mask model: a GRU for P(is_scored | sequence), trained on 80% of valid, scored on the 20% holdout.
 
 The mask is only needed as a *training* row weight (never at test time), so the model may be bidirectional.
 Inputs per step: normalised X and dX (224 dims). GRU -> logit; BCE on need rows (step >= 99).

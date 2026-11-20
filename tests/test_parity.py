@@ -1,4 +1,4 @@
-"""Train/inference parity checks (free, CPU, a few seconds). Run: python tests/test_parity.py
+"""Train/inference parity checks (CPU, a few seconds). Run: python tests/test_parity.py
 
 For every model variant the trainer can produce, the step-wise kernel that ships in a submission (wnn/infer.py
 StepModel, numba and numpy paths) must reproduce GRUModel.forward in fp32, including non-finite inputs.
@@ -60,7 +60,7 @@ def check_variants(T=1500):
         for name in VARIANTS:
             if name == "bank_scaled" and not HAVE_NUMBA:
                 # x - EMA is divided by a running scale that starts at 0 (+1e-6): in the first steps the ratio is
-                # rounding noise (up to ~0.1), so numpy and the fastmath kernel legitimately differ. Unused lever.
+                # rounding noise (up to ~0.1), so numpy and the fastmath kernel legitimately differ.
                 continue
             m, path, bank = build(name, tmp)
             X = (rng.normal(size=(T, 112)) * 2).astype(np.float32)

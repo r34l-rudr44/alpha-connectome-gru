@@ -1,4 +1,4 @@
-"""Headroom of per-sequence test-time adaptation, from cached valid predictions (free, local CPU).
+"""Headroom of per-sequence test-time adaptation, from cached valid predictions (local CPU).
 
 Labels are (almost) deterministic functions of the next few dozen feature rows, so at step t a submission could
 know y for steps <= t - h and adapt to the sequence it is in. This script measures what that is worth for the

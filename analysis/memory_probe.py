@@ -1,8 +1,8 @@
-"""Tier-0 probe: how much history does the trained GRU actually use? (local CPU, torch)
+"""How much history does the trained GRU actually use? (local CPU, torch)
 
 Runs a checkpoint over valid sequences with the hidden state reset every K steps (K = 20000 is the normal model)
 and reports scored WP per K. Also reports WP by position in the sequence for the full-memory model.
-If WP(K=1000) ~ WP(K=20000) the model only exploits ~1 TBPTT window of history -> long-memory is an untapped lever.
+If WP(K=1000) ~ WP(K=20000) the model only exploits ~1 TBPTT window of history -> long memory is unused.
 
 Usage: python analysis/memory_probe.py --ckpt runs/r2_s0/best.pt --n-seq 300
 """

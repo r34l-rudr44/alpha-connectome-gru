@@ -39,13 +39,13 @@ def load_solution(subdir: Path):
 def reference_us_per_step(X, n_steps=20000):
     """us/step of one random GRU-128 through the same numba kernel, measured in this process (same machine load).
 
-    Absolute laptop timings are useless as a verdict (the scorer core is several times faster and the laptop is
+    Absolute local timings are useless as a verdict (the scorer core is faster and a local machine is
     usually loaded); the ratio "submission us/step : bare GRU-128 kernel us/step" is what transfers. The ratio
     includes the Python call overhead and the cache cost of several weight sets, so 3 models are about 5 units.
-    Calibration against scored submissions (2026-11-11, 2 sequences each):
-        gru128.zip  (1 x GRU-128)        1.6 units -> 11.5 min on the scorer
-        ens3_r1.zip (3 x GRU-128)        4.9 units -> 32-34 min
-        ens4.zip    (4 models, 2.2 MB)   7.4 units -> 56.4 min (too close to the 60-min limit)
+    Calibration against scored submissions (2 sequences each):
+        1 x GRU-128          1.6 units -> 11.5 min on the scorer
+        3 x GRU-128          4.9 units -> 32-34 min
+        4 models, 2.2 MB     7.4 units -> 56.4 min (too close to the 60-min limit)
     i.e. roughly 7-8 scorer minutes per unit; the scorer itself varies by +-5%, sometimes +30%.
     """
     import tempfile

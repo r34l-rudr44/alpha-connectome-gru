@@ -1,4 +1,4 @@
-"""Bid/ask and i0/i1 column structure on the samples: per-index means, stds and target correlations (2026-11-11).
+"""Bid/ask and i0/i1 column structure on the samples: per-index means, stds and target correlations.
 
 Result: bid j and ask j are different components (no mirror symmetry by index); i0 and i1 share one transform.
 Usage: python analysis/mirror_probe.py

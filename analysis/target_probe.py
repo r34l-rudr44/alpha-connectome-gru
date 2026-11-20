@@ -1,4 +1,4 @@
-"""Target reverse-engineering on the local sample (free CPU). What is y a function of, in the future feature stream?
+"""Target reverse-engineering on the local sample (CPU). What is y a function of, in the future feature stream?
 
 Usage: python analysis/target_probe.py [--file sample/datasets/valid_sample.parquet] [--out runs/target_probe.json]
 """

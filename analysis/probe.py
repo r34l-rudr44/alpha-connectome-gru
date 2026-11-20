@@ -1,9 +1,9 @@
-"""Tier-0 probe (local CPU, no GPU): do causal hand features carry signal the GRU ensemble misses?
+"""Probe (local CPU): do causal hand features carry signal the GRU ensemble misses?
 
 Fits LightGBM on causal per-step features for (a) the targets directly and (b) the GRU residual y - p_gru,
 using one set of valid sequences, and evaluates on held-out valid sequences:
   WP(gru), WP(gbm), WP(gru + gbm_resid), WP(blend)  -- masked (is_scored) and unmasked (need_prediction).
-A residual gain > ~0.003 means the feature set is a lever (stacking / distillation / GRU inputs).
+A residual gain > ~0.003 means the feature set is worth using (stacking / distillation / GRU inputs).
 
 Usage: python analysis/probe.py --preds runs/ens_r3_valid.npy --n-fit 400 --n-eval 300 --stride 25
 """

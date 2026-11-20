@@ -1,7 +1,8 @@
 """Download (resumable) and extract the starter pack into a Modal Volume.
 
-Runs on Modal's network instead of uploading 31 GB from the laptop.
-Usage: modal run modal/fetch_data.py
+Runs on Modal's network instead of uploading 31 GB from a local machine. The download link is given to
+registered participants on the competition site and is not stored in this repository.
+Usage: modal run modal/fetch_data.py --url <starter-pack URL>
 """
 import modal
 
@@ -9,7 +10,6 @@ app = modal.App("wnn-connectome")
 vol = modal.Volume.from_name("wnn-connectome-data", create_if_missing=True)
 image = modal.Image.debian_slim().apt_install("curl", "pigz")
 
-URL = "<starter-pack URL from the competition site>"
 TOTAL = 33737976954
 ROOT = "/data"
 TB = f"{ROOT}/dl/pack.tar.gz"
@@ -17,7 +17,7 @@ DONE = f"{ROOT}/.fetch_done"
 
 
 @app.function(image=image, volumes={ROOT: vol}, timeout=4 * 3600, cpu=4, memory=8192)
-def fetch():
+def fetch(url: str):
     import os
     import shutil
     import subprocess
@@ -37,7 +37,7 @@ def fetch():
             if have >= TOTAL:
                 break
             print(f"attempt {attempt}: resuming at {have:,}/{TOTAL:,}", flush=True)
-            sh(f"curl -f -sS -r {have}- '{URL}' >> '{TB}'", check=False)
+            sh(f"curl -f -sS -r {have}- '{url}' >> '{TB}'", check=False)
             vol.commit()
             time.sleep(5)
         assert os.path.getsize(TB) == TOTAL, os.path.getsize(TB)
@@ -49,8 +49,8 @@ def fetch():
 
 
 @app.local_entrypoint()
-def main(detach: bool = False):
-    if detach:  # modal run --detach modal/fetch_data.py --detach  -> returns immediately, job keeps running
-        print("spawned", fetch.spawn().object_id)
+def main(url: str, detach: bool = False):
+    if detach:  # modal run --detach modal/fetch_data.py --url ... --detach  -> returns immediately, job keeps running
+        print("spawned", fetch.spawn(url).object_id)
         return
-    fetch.remote()
+    fetch.remote(url)

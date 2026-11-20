@@ -374,7 +374,7 @@ def get_parser():
     p.add_argument("--sched", default="onecycle", choices=["onecycle", "cosine"])
     p.add_argument("--pct-start", type=float, default=0.1, help="warm-up fraction of the schedule")
     p.add_argument("--scale-aug", type=float, default=0.0, help="per-sequence multiplicative input scale augmentation, e.g. 0.3 (0 = off)")
-    p.add_argument("--amp", action="store_true", help="bf16 autocast in training (the runs before 2026-11-11 used it); evaluation is always fp32")
+    p.add_argument("--amp", action="store_true", help="bf16 autocast in training; evaluation is always fp32")
     p.add_argument("--no-bias-decay", action="store_true", help="apply --wd to weight matrices only")
     p.add_argument("--init", default="", help="best.pt to initialise from (fine-tune); architecture and normalisation are taken from it")
     p.add_argument("--hind", default="", help="comma-separated delays h: auxiliary heads that output y[t-h] at step t (training only)")

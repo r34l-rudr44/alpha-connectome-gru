@@ -1,4 +1,4 @@
-"""Tier-0 probe: post-hoc calibration of GRU-ensemble predictions (local CPU).
+"""Post-hoc calibration of GRU-ensemble predictions (local CPU).
 
 Weighted Pearson is scale-free but not invariant to non-linear transforms, and the metric clips y at +-2 while the
 model may be fitting the unclipped conditional mean. Tests, fit on valid seqs A / evaluated on valid seqs B:

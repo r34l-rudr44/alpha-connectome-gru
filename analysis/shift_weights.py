@@ -1,4 +1,4 @@
-"""Covariate-shift weights for training sequences: w = P(valid | seq descriptors) / P(train | ...) (free, local).
+"""Covariate-shift weights for training sequences: w = P(valid | seq descriptors) / P(train | ...) (local CPU).
 
 Train and valid are consecutive time periods (organisers), and the regime mix drifts. A classifier on the
 per-sequence descriptors (modal/seq_stats.py) gives importance weights that re-weight train towards the valid period.

@@ -1,4 +1,4 @@
-"""Regime study (free, local): do sequences fall into distinct markets/regimes, and does our model's accuracy or the
+"""Regime study (local CPU): do sequences fall into distinct markets/regimes, and does the model's accuracy or the
 scoring mask depend on them? Uses runs/seq_stats/{train,valid}.npz (modal/seq_stats.py), runs/valid_targets.npz and
 runs/ens_r3_valid.npy.
 

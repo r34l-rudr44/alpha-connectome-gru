@@ -1,4 +1,4 @@
-"""Pull a small slice of the pack from the Modal volume to the laptop: baseline/, utils.py, docs,
+"""Pull a small slice of the pack from the Modal volume to the local machine: baseline/, utils.py, docs,
 requirements.txt, METRIC.md, README.md and the first N validation sequences as a parquet.
 
 Usage: modal run modal/extract_sample.py --n-valid 20

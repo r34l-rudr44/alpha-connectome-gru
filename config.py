@@ -1,16 +1,20 @@
-"""Paths and constants. Data lives outside the repo."""
+"""Paths and constants. The competition data is not part of this repository.
+
+Point WNN_PACK_DIR at the extracted starter pack. Without it the code looks for ./data/wnn_connectome_starterpack
+and then falls back to ./sample, a small slice written by modal/extract_sample.py.
+"""
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-_LOCAL = Path("data/wnn_connectome_starterpack")
-_full = (_LOCAL / "datasets" / "valid_mask.parquet").exists()        # last file in the archive => extraction complete
-PACK_DIR = _LOCAL if _full else ROOT / "sample"                      # sample/ = small slice pulled from Modal
+_PACK = Path(os.environ.get("WNN_PACK_DIR", ROOT / "data" / "wnn_connectome_starterpack"))
+_full = (_PACK / "datasets" / "valid_mask.parquet").exists()   # last file in the archive => extraction complete
+PACK_DIR = _PACK if _full else ROOT / "sample"
 DATA_DIR = PACK_DIR / "datasets"
 TRAIN = DATA_DIR / ("train.parquet" if _full else "train_sample.parquet")
 VALID = DATA_DIR / ("valid.parquet" if _full else "valid_sample.parquet")
 VALID_MASK = DATA_DIR / "valid_mask.parquet"
-CACHE_DIR = Path("cache")
-MODAL_PACK_DIR = "/data/wnn_connectome_starterpack"                # inside the Modal volume
+MODAL_PACK_DIR = "/data/wnn_connectome_starterpack"            # inside the Modal volume
 
 SEQ_LEN = 20_000
 WARMUP = 99            # steps 0..98 have need_prediction == False

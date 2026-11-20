@@ -1,4 +1,4 @@
-"""Phase-1 EDA on the Modal volume: target stats, mask stats, feature scales.
+"""Exploratory statistics on the Modal volume: target stats, mask stats, feature scales.
 
 Streams row groups (one sequence each), keeps only running sums, prints a summary.
 Usage: modal run modal/eda.py [--n-train 300]

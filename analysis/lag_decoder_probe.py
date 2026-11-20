@@ -1,9 +1,9 @@
-"""Can past labels be recovered a few dozen steps later, and does that help the causal model? (free, local CPU)
+"""Can past labels be recovered a few dozen steps later, and does that help the causal model? (local CPU)
 
 Stage 1: a small GRU reads features up to step t and outputs y[t-h] for several delays h (a decoding task, not a
          forecast). Trained on the 10 train sample sequences.
 Stage 2: on the 10 valid sample sequences, a linear stack y[t] ~ p[t] + sum_h b_h * (yhat[t-h | t] - p[t-h]),
-         cross-fitted 5/5, where p is the shipped causal model. Compared with p alone and with the same stack using
+         cross-fitted 5/5, where p is the exported causal model. Compared with p alone and with the same stack using
          the true y[t-h] (ceiling if decoding were perfect).
 Run: python analysis/lag_decoder_probe.py runs/s4_c3_tr/weights.npz
 """
@@ -82,7 +82,7 @@ for j, h in enumerate(H):
     c = [np.corrcoef(Dhat[:, 500:, 2 * j + k].ravel(), Dtrue[:, 500:, 2 * j + k].ravel())[0, 1] for k in (0, 1)]
     print(f"  h={h:<4d} t0 {c[0]:.3f}  t1 {c[1]:.3f}")
 
-# ---- stage 2: does the decoded past residual improve the shipped causal model?
+# ---- stage 2: does the decoded past residual improve the exported causal model?
 sm = StepModel(sys.argv[1]); P = np.zeros((N, T, 2), np.float32)
 for i in range(N):
     sm.reset()
@@ -116,7 +116,7 @@ def stack(D, hs, label):
 
 
 base = wp(P, np.arange(N))
-print(f"\nshipped causal model on the 10 valid sample sequences: {base:.5f}")
+print(f"\nexported causal model on the 10 valid sample sequences: {base:.5f}")
 stack(Dhat, [], "rescaled only (control)")
 for hs in ([200], [100], [50], [25], [10], [50, 100, 200], H):
     stack(Dhat, hs, f"+ decoded residual, h={hs}")

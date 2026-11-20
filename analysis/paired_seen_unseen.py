@@ -1,6 +1,6 @@
-"""Do models trained on train + 80% of valid score better on the valid sequences they saw? (2026-11-11: no.)
+"""Do models trained on train + 80% of valid score better on the valid sequences they saw?
 
-Per-sequence and pooled scored WP of train-only vs train+valid models on the valid sample; free, local.
+Per-sequence and pooled scored WP of train-only vs train+valid models on the valid sample.
 Usage: python analysis/paired_seen_unseen.py
 """
 import sys, numpy as np, pyarrow.parquet as pq
