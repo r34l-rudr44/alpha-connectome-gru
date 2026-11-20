@@ -84,20 +84,12 @@ The scripts behind these checks are in `analysis/` and `modal/`.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    data["Starter pack<br>212M training rows"]
-    mask["Scored-row model<br>causal GRU"]
-    train["GRU-128 training<br>train + validation, 3 seeds"]
-    export["Weight export<br>.npz, no torch needed"]
-    kernel["numba step kernel<br>one row at a time"]
-    submit["Submission<br>3-model average"]
-
-    data --> mask
-    data --> train
-    mask -- row weights --> train
-    train --> export --> kernel --> submit
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/pipeline-dark.svg">
+    <img src="assets/pipeline-light.svg" alt="Pipeline: the starter pack feeds a scored-row model and GRU-128 training; the trained weights are exported, run by a numba step kernel and averaged over three models in the submission" width="820">
+  </picture>
+</p>
 
 | Part | What it does | Where |
 | --- | --- | --- |

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 276" width="820" height="276" role="img" aria-labelledby="t d" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+<title id="t">Training and inference pipeline</title>
+<desc id="d">Training: the starter pack feeds a scored-row model, whose row weights feed GRU-128 training on train plus validation with three seeds. Inference: the weights are exported, run by a numba step kernel one row at a time, and averaged over three models in the submission.</desc>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L9 5 L0 9 z" fill="#898781"/></marker></defs>
+<text x="0" y="26" font-size="11" font-weight="600" letter-spacing="0.08em" fill="#898781">TRAINING<tspan font-weight="400" letter-spacing="0" dx="8">one GPU, about six minutes per model</tspan></text>
+<rect x="0.5" y="40.5" width="219" height="67" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="16" y="69" font-size="14" font-weight="600" fill="#0b0b0b">Starter pack</text>
+<text x="16" y="89" font-size="12" fill="#52514e">212M rows, 112 features each</text>
+<line x1="228" y1="74.0" x2="292" y2="74.0" stroke="#898781" stroke-width="1.5" marker-end="url(#a)"/>
+<rect x="300.5" y="40.5" width="219" height="67" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="316" y="69" font-size="14" font-weight="600" fill="#0b0b0b">Scored-row model</text>
+<text x="316" y="89" font-size="12" fill="#52514e">causal GRU, outputs row weights</text>
+<line x1="528" y1="74.0" x2="592" y2="74.0" stroke="#898781" stroke-width="1.5" marker-end="url(#a)"/>
+<rect x="600.5" y="40.5" width="219" height="67" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="616" y="69" font-size="14" font-weight="600" fill="#0b0b0b">GRU-128 training</text>
+<text x="616" y="89" font-size="12" fill="#52514e">train + validation, 3 seeds</text>
+<text x="0" y="182" font-size="11" font-weight="600" letter-spacing="0.08em" fill="#898781">INFERENCE<tspan font-weight="400" letter-spacing="0" dx="8">one CPU core, 91 microseconds per row</tspan></text>
+<rect x="0.5" y="196.5" width="219" height="67" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="16" y="225" font-size="14" font-weight="600" fill="#0b0b0b">Weight export</text>
+<text x="16" y="245" font-size="12" fill="#52514e">.npz files, no torch at test time</text>
+<line x1="228" y1="230.0" x2="292" y2="230.0" stroke="#898781" stroke-width="1.5" marker-end="url(#a)"/>
+<rect x="300.5" y="196.5" width="219" height="67" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+<text x="316" y="225" font-size="14" font-weight="600" fill="#0b0b0b">numba step kernel</text>
+<text x="316" y="245" font-size="12" fill="#52514e">one row at a time, matches PyTorch</text>
+<line x1="528" y1="230.0" x2="592" y2="230.0" stroke="#898781" stroke-width="1.5" marker-end="url(#a)"/>
+<rect x="600.5" y="196.5" width="219" height="67" rx="8" fill="#f6f8fa" stroke="#2a78d6" stroke-width="1.5"/>
+<text x="616" y="225" font-size="14" font-weight="600" fill="#0b0b0b">Submission</text>
+<text x="616" y="245" font-size="12" fill="#52514e">3-model average, 33 minutes</text>
+<path d="M710.0 116 V142.0 H110.0 V162" fill="none" stroke="#898781" stroke-width="1.5" stroke-linejoin="round" marker-end="url(#a)"/>
+</svg>
